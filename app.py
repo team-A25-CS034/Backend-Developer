@@ -1,20 +1,56 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-import joblib
-import pandas as pd
-import numpy as np
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
 import jwt
 from passlib.context import CryptContext
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
+from typing import Optional, List, Dict
+
+# Import our custom modules
+from mongodb_client import MongoDBClient
+from forecasting import generate_forecast, prepare_forecast_data
+from classification import initialize_classifier, get_classifier
 
 # Load environment variables
 load_dotenv()
 
-app = FastAPI(title='Classifier Test API')
+# MongoDB configuration
+MONGODB_URI = os.getenv('MONGODB_URI')
+MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'machine_monitoring')
+
+# Global MongoDB client
+mongodb_client: Optional[MongoDBClient] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage MongoDB connection and model loading lifecycle"""
+    global mongodb_client
+    
+    # Startup
+    # Initialize MongoDB
+    if MONGODB_URI:
+        mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE)
+        print(f"✅ Connected to MongoDB: {MONGODB_DATABASE}")
+    else:
+        print("⚠️ MONGODB_URI not set - running without database")
+    
+    # Initialize Classifier
+    initialize_classifier(MODEL_PATH)
+    
+    yield
+    
+    # Shutdown
+    if mongodb_client:
+        await mongodb_client.close()
+        print("🔌 MongoDB connection closed")
+
+
+app = FastAPI(title='Classifier Test API', lifespan=lifespan)
 
 # JWT Configuration
 ACCESS_TOKEN_KEY = os.getenv('ACCESS_TOKEN_KEY')
@@ -52,21 +88,6 @@ app.add_middleware(
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'classifier.h5')
 
-# Default expected feature order (will be overridden if the loaded model exposes feature names)
-EXPECTED_FEATURES = ['Air temperature', 'Process temperature', 'Rotational speed', 'Torque', 'Tool wear', 'Type']
-
-# Mapping for Type ordinal encoding
-TYPE_MAP = {'L': 0, 'M': 1, 'H': 2}
-
-LABEL_MAP = {
-    0: 'No Failure',
-    1: 'Heat Dissipation Failure',
-    2: 'Power Failure',
-    3: 'Overstrain Failure',
-    4: 'Tool Wear Failure',
-    5: 'Random Failures'
-}
-
 class InputSample(BaseModel):
     Air_temperature: float
     Process_temperature: float
@@ -83,6 +104,16 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str
     expires_in: int
+
+class ForecastRequest(BaseModel):
+    machine_id: str
+    forecast_days: int = 7
+
+class ForecastResponse(BaseModel):
+    machine_id: str
+    forecast_days: int
+    forecast_data: List[Dict]
+    created_at: str
 
 # Authentication functions
 def create_access_token(data: dict) -> str:
@@ -127,26 +158,14 @@ def authenticate_user(username: str, password: str) -> bool:
     # For now, we'll do simple comparison
     return password == API_PASSWORD
 
-# Load model at startup
-try:
-    model = joblib.load(MODEL_PATH)
-    # Attempt to read feature names from the model (XGBoost stores them on the booster)
-    try:
-        booster = model.get_booster()
-        model_feature_names = booster.feature_names
-    except Exception:
-        model_feature_names = None
-    if model_feature_names:
-        # Respect the model's expected feature order
-        EXPECTED_FEATURES = list(model_feature_names)
-        print('Model expected feature order (from booster):', EXPECTED_FEATURES)
-except Exception:
-    model = None
-
 
 @app.get('/')
 def root():
-    return {'status': 'ok', 'model_loaded': model is not None}
+    classifier = get_classifier()
+    return {
+        'status': 'ok',
+        'model_loaded': classifier is not None and classifier.is_loaded()
+    }
 
 
 @app.post('/login', response_model=TokenResponse)
@@ -172,44 +191,117 @@ def login(credentials: LoginRequest):
 
 @app.post('/predict')
 def predict(sample: InputSample, token: dict = Depends(verify_token)):
-    if model is None:
+    """
+    Predict machine failure status from sensor data
+    
+    Args:
+        sample: InputSample with sensor readings
+        token: JWT token (authenticated user)
+    
+    Returns:
+        Prediction result with label and probabilities
+    """
+    classifier = get_classifier()
+    
+    if not classifier or not classifier.is_loaded():
         raise HTTPException(status_code=500, detail='Model not loaded on server')
+    
+    try:
+        result = classifier.predict(
+            air_temperature=sample.Air_temperature,
+            process_temperature=sample.Process_temperature,
+            rotational_speed=sample.Rotational_speed,
+            torque=sample.Torque,
+            tool_wear=sample.Tool_wear,
+            machine_type=sample.Type
+        )
+        return result
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Prediction error: {str(e)}')
 
-    # convert to DataFrame with expected names
-    df = pd.DataFrame([{
-        'Air temperature': sample.Air_temperature,
-        'Process temperature': sample.Process_temperature,
-        'Rotational speed': sample.Rotational_speed,
-        'Torque': sample.Torque,
-        'Tool wear': sample.Tool_wear,
-        'Type': sample.Type
-    }])
 
-    # map Type
-    if df['Type'].dtype == object:
-        df['Type'] = df['Type'].map(TYPE_MAP)
-
-    # ensure ordering and numeric types
-    missing = set(EXPECTED_FEATURES) - set(df.columns)
-    if missing:
-        raise HTTPException(status_code=400, detail=f'Missing features: {missing}')
-
-    # Reorder columns to exactly match model's feature names to avoid XGBoost feature_name mismatch
-    df = df[EXPECTED_FEATURES]
-
-    # If the model expects a different internal order (e.g., 'Type' first), the EXPECTED_FEATURES will reflect that
-    df = df.astype(float)
-
-    pred = model.predict(df)
-    pred_label = LABEL_MAP.get(int(pred[0]), str(pred[0]))
-
-    result = {'prediction_numeric': int(pred[0]), 'prediction_label': pred_label}
-
-    if hasattr(model, 'predict_proba'):
-        try:
-            probs = model.predict_proba(df)[0].tolist()
-            result['probabilities'] = probs
-        except Exception:
-            result['probabilities'] = None
-
-    return result
+@app.post('/forecast', response_model=ForecastResponse)
+async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)):
+    """
+    Generate forecast for machine sensor data for N days ahead
+    
+    Args:
+        request: ForecastRequest with machine_id and forecast_days
+        token: JWT token (authenticated user)
+    
+    Returns:
+        ForecastResponse with forecast data
+    """
+    if not mongodb_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Database not connected. Please configure MONGODB_URI in .env"
+        )
+    
+    machine_id = request.machine_id
+    forecast_days = request.forecast_days
+    
+    # Validate forecast_days
+    if forecast_days < 1 or forecast_days > 30:
+        raise HTTPException(
+            status_code=400,
+            detail="forecast_days must be between 1 and 30"
+        )
+    
+    try:
+        # Get historical data (last 30 days minimum for good predictions)
+        historical_readings = await mongodb_client.get_readings_range(
+            machine_id=machine_id,
+            days=30
+        )
+        
+        if not historical_readings:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No historical data found for machine_id: {machine_id}"
+            )
+        
+        if len(historical_readings) < 7:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient data for forecasting. Found {len(historical_readings)} readings, need at least 7"
+            )
+        
+        # Prepare data for forecasting
+        df_historical = prepare_forecast_data(historical_readings)
+        
+        # Get machine type from latest reading
+        machine_type = historical_readings[-1].get('machine_type', 'M')
+        
+        # Generate forecast
+        forecast_data = generate_forecast(
+            historical_data=df_historical,
+            machine_id=machine_id,
+            machine_type=machine_type,
+            forecast_days=forecast_days
+        )
+        
+        # Save forecast to database
+        await mongodb_client.save_forecast(
+            machine_id=machine_id,
+            forecast_days=forecast_days,
+            forecast_data=forecast_data
+        )
+        
+        return ForecastResponse(
+            machine_id=machine_id,
+            forecast_days=forecast_days,
+            forecast_data=forecast_data,
+            created_at=datetime.now(timezone.utc).isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating forecast: {str(e)}"
+        )

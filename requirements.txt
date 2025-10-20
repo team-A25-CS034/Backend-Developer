@@ -9,3 +9,5 @@ PyJWT
 passlib[bcrypt]
 python-multipart
 python-dotenv
+motor
+skforecast
