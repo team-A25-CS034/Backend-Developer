@@ -1,12 +1,11 @@
 """
 Forecasting utilities for sensor data prediction
-Based on skforecast with ForecasterRecursive
+Using ForecasterRecursive for all parameters
 """
 
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
-from sklearn.svm import SVR
 from skforecast.recursive import ForecasterRecursive
 from typing import Dict, List
 from datetime import datetime, timedelta
@@ -31,32 +30,55 @@ def prepare_forecast_data(readings: List[Dict]) -> pd.DataFrame:
     return df
 
 
-def forecast_air_temperature(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray:
-    """Forecast air temperature using SVR + ForecasterRecursive"""
+def forecast_parameter(
+    data: pd.Series, 
+    steps: int = 7, 
+    lags: int = None,
+    clip_min: float = None
+) -> np.ndarray:
+    """
+    Generic forecasting function using ForecasterRecursive
     
-    # Prepare data
-    df = historical_data.copy()
-    df = df.reset_index(drop=True)
+    Args:
+        data: Pandas Series with historical data
+        steps: Number of steps to forecast
+        lags: Number of lags to use (auto-calculated if None)
+        clip_min: Minimum value for predictions (optional)
     
-    # Use index as x for SVR regression
-    x = pd.DataFrame(list(df.index), columns=["Index"])
-    y = df["air_temperature"]
+    Returns:
+        Array of forecasted values
+    """
+    # Auto-calculate lags if not provided
+    if lags is None:
+        lags = min(7, len(data) - 1)  # Use 7 days of history or less
+    else:
+        lags = min(lags, len(data) - 1)
     
-    # SVR regression for smoothing
-    svr = SVR(kernel='rbf')
-    svr.fit(x, y)
-    y_pred = svr.predict(x)
-    
-    # Forecasting with ForecasterRecursive
-    train_dataset = pd.DataFrame(y_pred, columns=["air_temperature"])
+    # Create and fit forecaster
     forecaster = ForecasterRecursive(
         regressor=LinearRegression(),
-        lags=1
+        lags=lags
     )
-    forecaster.fit(y=train_dataset["air_temperature"])
+    forecaster.fit(y=data)
     
+    # Generate predictions
     predictions = forecaster.predict(steps=steps)
-    return predictions.values
+    predictions_array = predictions.values
+    
+    # Apply clipping if specified
+    if clip_min is not None:
+        predictions_array = np.maximum(predictions_array, clip_min)
+    
+    return predictions_array
+
+
+def forecast_air_temperature(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray:
+    """Forecast air temperature"""
+    return forecast_parameter(
+        data=historical_data["air_temperature"],
+        steps=steps,
+        lags=7  # Use 1 week of history
+    )
 
 
 def forecast_process_temperature(
@@ -64,102 +86,70 @@ def forecast_process_temperature(
     air_temp_forecast: np.ndarray,
     steps: int = 7
 ) -> np.ndarray:
-    """Forecast process temperature (relative to air temperature)"""
-    
+    """
+    Forecast process temperature (relative to air temperature)
+    Process temp is typically 10K higher than air temp
+    """
+    # Calculate relative process temperature
     df = historical_data.copy()
-    df = df.reset_index(drop=True)
+    process_temp_relative = df["process_temperature"] - df["air_temperature"]
     
-    # Calculate relative process temperature (Process - Air - 10)
-    process_temp_relative = df["process_temperature"] - df["air_temperature"] - 10
-    
-    # Use index as x for SVR regression
-    x = pd.DataFrame(list(df.index), columns=["Index"])
-    y = process_temp_relative
-    
-    # SVR regression
-    svr = SVR(kernel='rbf')
-    svr.fit(x, y)
-    y_pred = svr.predict(x)
-    
-    # Forecasting
-    train_dataset = pd.DataFrame(y_pred, columns=["process_temperature"])
-    forecaster = ForecasterRecursive(
-        regressor=LinearRegression(),
-        lags=1
+    # Forecast the relative difference
+    relative_forecast = forecast_parameter(
+        data=process_temp_relative,
+        steps=steps,
+        lags=7
     )
-    forecaster.fit(y=train_dataset["process_temperature"])
     
-    predictions = forecaster.predict(steps=steps)
-    
-    # Convert back to absolute temperature (add air temp + 10)
-    predictions = predictions.values + air_temp_forecast + 10
+    # Add back the forecasted air temperature
+    predictions = relative_forecast + air_temp_forecast
     
     return predictions
 
 
 def forecast_rotational_speed(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray:
     """Forecast rotational speed"""
-    
-    df = historical_data.copy()
-    y = df["rotational_speed"]
-    
-    forecaster = ForecasterRecursive(
-        regressor=LinearRegression(),
-        lags=min(50, len(y) - 1)  # Adjust lags if data is short
+    return forecast_parameter(
+        data=historical_data["rotational_speed"],
+        steps=steps,
+        lags=30,  # Use more history for stable patterns
+        clip_min=0  # Speed cannot be negative
     )
-    forecaster.fit(y=y)
-    
-    predictions = forecaster.predict(steps=steps)
-    return predictions.values
 
 
 def forecast_torque(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray:
     """Forecast torque"""
-    
-    df = historical_data.copy()
-    y = df["torque"]
-    
-    forecaster = ForecasterRecursive(
-        regressor=LinearRegression(),
-        lags=min(50, len(y) - 1)  # Adjust lags if data is short
+    return forecast_parameter(
+        data=historical_data["torque"],
+        steps=steps,
+        lags=30,  # Use more history for stable patterns
+        clip_min=0  # Torque cannot be negative
     )
-    forecaster.fit(y=y)
-    
-    predictions = forecaster.predict(steps=steps)
-    
-    # Ensure no negative torque values
-    predictions = np.maximum(predictions.values, 0)
-    
-    return predictions
 
 
 def forecast_tool_wear(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray:
     """
-    Forecast tool wear - simple linear progression
-    For daily monitoring, tool wear increases by ~24 minutes per day
+    Forecast tool wear - monotonically increasing
+    Tool wear increases over time, never decreases
     """
-    
     df = historical_data.copy()
     
-    # Get the last known tool wear value
-    last_tool_wear = df["tool_wear"].iloc[-1]
+    # Forecast using ForecasterRecursive
+    predictions = forecast_parameter(
+        data=df["tool_wear"],
+        steps=steps,
+        lags=14,  # Use 2 weeks of history
+        clip_min=df["tool_wear"].iloc[-1]  # Never go below last known value
+    )
     
-    # Calculate daily increase (assume linear wear)
-    if len(df) > 1:
-        # Calculate average daily increase from historical data
-        first_tool_wear = df["tool_wear"].iloc[0]
-        days_elapsed = len(df) - 1
-        if days_elapsed > 0:
-            daily_increase = (last_tool_wear - first_tool_wear) / days_elapsed
-        else:
-            daily_increase = 24  # Default: 24 minutes per day
-    else:
-        daily_increase = 24  # Default: 24 minutes per day
+    # Ensure monotonic increase
+    last_value = df["tool_wear"].iloc[-1]
+    for i in range(len(predictions)):
+        if predictions[i] < last_value:
+            predictions[i] = last_value
+        last_value = predictions[i]
     
-    # Project forward
-    future_tool_wear = [last_tool_wear + (i + 1) * daily_increase for i in range(steps)]
-    
-    return np.array(future_tool_wear)
+    return predictions
 
 
 def generate_forecast(
@@ -181,7 +171,7 @@ def generate_forecast(
         List of forecast dictionaries with all sensor values
     """
     
-    # Forecast each parameter
+    # Forecast each parameter using ForecasterRecursive
     air_temp_forecast = forecast_air_temperature(historical_data, steps=forecast_days)
     process_temp_forecast = forecast_process_temperature(
         historical_data, 
