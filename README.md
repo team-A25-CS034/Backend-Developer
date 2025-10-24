@@ -8,6 +8,8 @@ python -m pip install -r requirements.txt
 
 ### 2. Configure Environment
 
+Create a `.env` file in the root directory based on `.env.example`
+
 ### 3. Run Server
 
 ```bash
