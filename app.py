@@ -265,6 +265,15 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
         )
         
         if not historical_readings:
+            # Fallback: if there are no readings in the last N days (e.g. the
+            # available data is historic), fetch the last available readings
+            # regardless of timestamp so forecasting can still run.
+            historical_readings = await mongodb_client.get_last_readings(
+                machine_id=machine_id,
+                limit=1440
+            )
+
+        if not historical_readings:
             raise HTTPException(
                 status_code=404,
                 detail=f"No historical data found for machine_id: {machine_id}"

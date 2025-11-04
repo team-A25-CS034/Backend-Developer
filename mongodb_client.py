@@ -68,6 +68,22 @@ class MongoDBClient:
         
         readings = await cursor.to_list(length=None)
         return readings
+
+    async def get_last_readings(self, machine_id: str, limit: int = 1440) -> List[Dict]:
+        """Return the last `limit` readings for a machine regardless of timestamp.
+
+        This is a fallback for datasets that are historic (older than the
+        requested days window) so the forecast endpoint can still operate on
+        the most recent available data.
+        """
+        cursor = self.sensor_readings.find(
+            {'machine_id': machine_id},
+            sort=[('timestamp', -1)]
+        ).limit(limit)
+
+        docs = await cursor.to_list(length=limit)
+        # Return in chronological order (oldest first)
+        return list(reversed(docs))
     
     async def save_prediction(
         self,
