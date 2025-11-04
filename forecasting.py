@@ -106,45 +106,45 @@ def forecast_air_temperature(historical_data: pd.DataFrame, steps: int = 7) -> n
        lags=1 (the notebook uses lags=1) and predict `steps` ahead.
     6. Apply clipping to keep predictions in a reasonable physical range.
     """
+    # Follow the notebook cells closely (only column names remain lowercase):
     df = historical_data.copy()
 
     if "air_temperature" not in df.columns:
         raise KeyError("'air_temperature' column missing from historical_data")
 
-    # If tool_wear exists, try to use it as the index and reindex to full range
-    # (0..max). If the tool_wear column contains duplicate labels (possible for
-    # synthetic/per-minute data) fall back to a simple integer index.
+    # Notebook: set index to tool_wear and reindex to full range 0..max
     if "tool_wear" in df.columns:
         df = df.set_index("tool_wear")
+        # If duplicate tool_wear labels exist (common in per-minute or noisy data),
+        # aggregate duplicates by mean on numeric sensor columns so reindexing
+        # behaves like the notebook (avoid attempting mean on object columns
+        # such as timestamp or machine_id which would raise an error).
         if df.index.has_duplicates:
-            # Fall back: preserve row order and use integer index
-            df = df.reset_index(drop=True)
-            df.index = pd.Index(range(len(df)), name="tool_wear")
-        else:
-            full_index = pd.Index(range(int(df.index.max()) + 1), name="tool_wear")
-            df = df.reindex(full_index)
+            numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+            if len(numeric_cols) == 0:
+                raise RuntimeError("No numeric columns available to aggregate after grouping by tool_wear")
+            df = df.groupby(df.index)[numeric_cols].mean()
+        full_index = pd.Index(range(int(df.index.max()) + 1), name="Tool wear")
+        df = df.reindex(full_index)
 
-    # Clamp outliers and interpolate
+    # Notebook: clamp outliers using IQR then interpolate
     _, lower_bound, upper_bound = detect_outliers_iqr(df, "air_temperature")
     df.loc[df["air_temperature"] < lower_bound, "air_temperature"] = lower_bound
     df.loc[df["air_temperature"] > upper_bound, "air_temperature"] = upper_bound
     df["air_temperature"] = df["air_temperature"].interpolate()
 
-    # Prepare SVR smoothing: X is the index values
+    # Notebook: reset index and build X (index) and y
+    df = df.reset_index(drop=True)
     x = pd.DataFrame(list(df.index), columns=["Index"]).astype(float)
     y = df["air_temperature"].values
 
-    # Fit SVR to obtain smoothed values (mirrors the notebook)
+    # SVR smoothing (RBF) as in notebook
     svr = SVR(kernel="rbf")
-    # If there are NaNs after interpolation (edge cases), fill forward/backward
-    x_vals = x.values
     y_vals = np.nan_to_num(y, nan=np.nanmean(y) if np.isfinite(np.nanmean(y)) else 0.0)
-    svr.fit(x_vals, y_vals)
-    y_pred = svr.predict(x_vals)
+    svr.fit(x.values, y_vals)
+    y_pred = svr.predict(x.values)
 
-    # Train forecaster on smoothed series; notebook uses a train/test split with
-    # the last 50 points reserved for testing. We'll follow that pattern if
-    # enough points exist, otherwise fit on the entire smoothed series.
+    # Notebook: reserve last 50 points for test; train on the rest when available
     if len(y_pred) > 50:
         train = y_pred[:-50]
     else:
@@ -178,24 +178,31 @@ def forecast_process_temperature(
     if "process_temperature" not in df.columns or "air_temperature" not in df.columns:
         raise KeyError("Required columns missing for process temperature forecasting")
 
-    # Build the relative series and handle index/reindex if tool_wear present
+    # Notebook: build relative series and reindex by tool_wear
     df_rel = df.copy()
     df_rel["process_rel"] = df_rel["process_temperature"] - df_rel["air_temperature"] - 10
 
     if "tool_wear" in df_rel.columns:
         df_rel = df_rel.set_index("tool_wear")
+        # Aggregate duplicates by mean on the relative series only before reindexing
+        # to avoid duplicate-label errors and to prevent trying to average
+        # non-numeric columns.
         if df_rel.index.has_duplicates:
-            df_rel = df_rel.reset_index(drop=True)
-            df_rel.index = pd.Index(range(len(df_rel)), name="tool_wear")
-        else:
-            full_index = pd.Index(range(int(df_rel.index.max()) + 1), name="tool_wear")
-            df_rel = df_rel.reindex(full_index)
+            if "process_rel" in df_rel.columns and pd.api.types.is_numeric_dtype(df_rel["process_rel"]):
+                df_rel = df_rel.groupby(df_rel.index)[["process_rel"]].mean()
+            else:
+                raise RuntimeError("process_rel missing or non-numeric when aggregating duplicates by tool_wear")
+        full_index = pd.Index(range(int(df_rel.index.max()) + 1), name="Tool wear")
+        df_rel = df_rel.reindex(full_index)
 
+    # Clamp outliers, interpolate
     _, lower_bound, upper_bound = detect_outliers_iqr(df_rel, "process_rel")
     df_rel.loc[df_rel["process_rel"] < lower_bound, "process_rel"] = lower_bound
     df_rel.loc[df_rel["process_rel"] > upper_bound, "process_rel"] = upper_bound
     df_rel["process_rel"] = df_rel["process_rel"].interpolate()
 
+    # SVR smoothing and forecaster on the relative series
+    df_rel = df_rel.reset_index(drop=True)
     x = pd.DataFrame(list(df_rel.index), columns=["Index"]).astype(float)
     y = df_rel["process_rel"].values
 
@@ -210,13 +217,13 @@ def forecast_process_temperature(
         train = y_pred
 
     forecaster = ForecasterRecursive(regressor=LinearRegression(), lags=1)
-    forecaster.fit(y=pd.Series(train, name="Process rel"))
+    forecaster.fit(y=pd.Series(train, name="Process temperature"))
     relative_forecast = forecaster.predict(steps=steps).values
 
     # Notebook clamps relative process forecasts to [-3, 3]
     relative_forecast = np.clip(relative_forecast, -3.0, 3.0)
 
-    # Add back air temp forecast + 10
+    # Add back air temp forecast + 10 (air_temp_forecast is an array)
     predictions = relative_forecast + air_temp_forecast + 10.0
     return predictions
 
@@ -229,7 +236,14 @@ def forecast_rotational_speed(historical_data: pd.DataFrame, steps: int = 7) -> 
     if "rotational_speed" not in historical_data.columns:
         raise KeyError("'rotational_speed' column missing from historical_data")
 
-    y = historical_data["rotational_speed"].dropna().values
+    # Notebook: clamp, interpolate, then use mean baseline and forecaster
+    df = historical_data.copy()
+    _, lower_bound, upper_bound = detect_outliers_iqr(df, "rotational_speed")
+    df.loc[df["rotational_speed"] < lower_bound, "rotational_speed"] = lower_bound
+    df.loc[df["rotational_speed"] > upper_bound, "rotational_speed"] = upper_bound
+    df["rotational_speed"] = df["rotational_speed"].interpolate()
+
+    y = df["rotational_speed"].dropna().values
     baseline = float(np.mean(y)) if len(y) > 0 else 0.0
     y_pred = baseline * np.ones_like(y)
 
@@ -252,8 +266,14 @@ def forecast_torque(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray
     if "torque" not in historical_data.columns:
         raise KeyError("'torque' column missing from historical_data")
 
-    y = historical_data["torque"].dropna().values
-    # Notebook uses a constant 40 for smoothing baseline
+    # Notebook: clamp, interpolate, use constant 40 baseline and forecaster
+    df = historical_data.copy()
+    _, lower_bound, upper_bound = detect_outliers_iqr(df, "torque")
+    df.loc[df["torque"] < lower_bound, "torque"] = lower_bound
+    df.loc[df["torque"] > upper_bound, "torque"] = upper_bound
+    df["torque"] = df["torque"].interpolate()
+
+    y = df["torque"].dropna().values
     y_pred = 40.0 * np.ones_like(y)
 
     if len(y_pred) > 50:
@@ -264,7 +284,7 @@ def forecast_torque(historical_data: pd.DataFrame, steps: int = 7) -> np.ndarray
     forecaster = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster.fit(y=pd.Series(train, name="Torque"))
     preds = forecaster.predict(steps=steps).values
-    preds = np.maximum(preds, 0.0)
+    preds[preds < 0] = 0
     return preds
 
 
@@ -364,23 +384,3 @@ def _print_forecast_sample(forecast: List[Dict], sample_size: int = 5) -> None:
             f"torque={item.get('torque'):.2f}",
             f"tool_wear={item.get('tool_wear'):.2f}",
         )
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run minute-based forecast using forecasting module")
-    parser.add_argument("--csv", default="d:/project/asah-github-org/Backend-Developer/dummy_sensor_data.csv", help="Path to historical CSV")
-    # Fixed minute horizon (default 300). Keep the flag for convenience.
-    parser.add_argument("--minutes", dest="minutes", type=int, default=300, help="Number of minutes to forecast (default 300)")
-    parser.add_argument("--machine-id", default="machine_01")
-    parser.add_argument("--machine-type", default="M")
-    args = parser.parse_args()
-
-    # Load CSV and run forecast
-    df = pd.read_csv(args.csv)
-    readings = df.to_dict("records")
-    hist = prepare_forecast_data(readings)
-
-    forecast = generate_forecast(historical_data=hist, machine_id=args.machine_id, machine_type=args.machine_type, forecast_minutes=args.minutes)
-    _print_forecast_sample(forecast, sample_size=5)
