@@ -9,6 +9,7 @@ from passlib.context import CryptContext
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict
+from fastapi import Header
 
 # Import our custom modules
 from mongodb_client import MongoDBClient
@@ -20,7 +21,9 @@ load_dotenv()
 
 # MongoDB configuration
 MONGODB_URI = os.getenv('MONGODB_URI')
-MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'machine_monitoring')
+# Default database and collection updated to match the new deployment
+MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'machine_monitoring_db')
+MONGODB_COLLECTION = os.getenv('MONGODB_COLLECTION', 'machine_monitoring')
 
 # Global MongoDB client
 mongodb_client: Optional[MongoDBClient] = None
@@ -34,8 +37,10 @@ async def lifespan(app: FastAPI):
     # Startup
     # Initialize MongoDB
     if MONGODB_URI:
-        mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE)
-        print(f"✅ Connected to MongoDB: {MONGODB_DATABASE}")
+        # Pass database and collection name into the client so it can
+        # connect to the correct DB / collection layout.
+        mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE, MONGODB_COLLECTION)
+        print(f"✅ Connected to MongoDB: {MONGODB_DATABASE} (collection={MONGODB_COLLECTION})")
     else:
         print("⚠️ MONGODB_URI not set - running without database")
     
@@ -107,11 +112,12 @@ class TokenResponse(BaseModel):
 
 class ForecastRequest(BaseModel):
     machine_id: str
-    forecast_days: int = 7
+    # Now using minute-based forecasting (default 300 minutes)
+    forecast_minutes: int = 300
 
 class ForecastResponse(BaseModel):
     machine_id: str
-    forecast_days: int
+    forecast_minutes: int
     forecast_data: List[Dict]
     created_at: str
 
@@ -242,13 +248,13 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
         )
     
     machine_id = request.machine_id
-    forecast_days = request.forecast_days
-    
-    # Validate forecast_days
-    if forecast_days < 1 or forecast_days > 30:
+    forecast_minutes = request.forecast_minutes
+
+    # Validate forecast_minutes (limit to 1 day of minutes by default)
+    if forecast_minutes < 1 or forecast_minutes > 1440:
         raise HTTPException(
             status_code=400,
-            detail="forecast_days must be between 1 and 30"
+            detail="forecast_minutes must be between 1 and 1440"
         )
     
     try:
@@ -281,19 +287,19 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
             historical_data=df_historical,
             machine_id=machine_id,
             machine_type=machine_type,
-            forecast_days=forecast_days
+            forecast_minutes=forecast_minutes
         )
-        
-        # Save forecast to database
+
+        # Save forecast to database (store minutes)
         await mongodb_client.save_forecast(
             machine_id=machine_id,
-            forecast_days=forecast_days,
+            forecast_minutes=forecast_minutes,
             forecast_data=forecast_data
         )
-        
+
         return ForecastResponse(
             machine_id=machine_id,
-            forecast_days=forecast_days,
+            forecast_minutes=forecast_minutes,
             forecast_data=forecast_data,
             created_at=datetime.now(timezone.utc).isoformat()
         )
@@ -305,3 +311,97 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
             status_code=500,
             detail=f"Error generating forecast: {str(e)}"
         )
+
+
+@app.get('/readings')
+async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = Depends(verify_token)):
+    """Return the most recent sensor readings for a machine.
+
+    Query params:
+    - machine_id: machine identifier
+    - limit: maximum number of records to return (default 100)
+    """
+    if not mongodb_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Database not connected. Please configure MONGODB_URI in .env"
+        )
+
+    try:
+        cursor = mongodb_client.sensor_readings.find(
+            {'machine_id': machine_id},
+            sort=[('timestamp', -1)]
+        ).limit(limit)
+
+        readings = await cursor.to_list(length=limit)
+
+        # Convert non-JSON-serializable fields (ObjectId, datetime) to strings
+        safe_readings = []
+        for doc in readings:
+            safe = dict(doc)
+            if '_id' in safe:
+                try:
+                    safe['_id'] = str(safe['_id'])
+                except Exception:
+                    safe['_id'] = repr(safe.get('_id'))
+            if 'timestamp' in safe and hasattr(safe['timestamp'], 'isoformat'):
+                safe['timestamp'] = safe['timestamp'].isoformat()
+            safe_readings.append(safe)
+
+        return {
+            'machine_id': machine_id,
+            'count': len(safe_readings),
+            'readings': safe_readings,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
+
+
+@app.get('/readings-dump')
+async def get_recent_readings_dump(machine_id: str, limit: int = 20, x_admin_password: str = Header(None)):
+    """Return recent readings if the caller provides the admin password header.
+
+    This endpoint is intended for quick frontend inspection using the
+    project password stored in `.env`. It checks the header
+    `X-Admin-Password` against the `API_PASSWORD` environment value.
+    Do NOT expose this endpoint publicly in production.
+    """
+    # Validate admin password header
+    if not x_admin_password or x_admin_password != API_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    if not mongodb_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Database not connected. Please configure MONGODB_URI in .env"
+        )
+
+    try:
+        cursor = mongodb_client.sensor_readings.find(
+            {'machine_id': machine_id},
+            sort=[('timestamp', -1)]
+        ).limit(limit)
+
+        readings = await cursor.to_list(length=limit)
+
+        safe_readings = []
+        for doc in readings:
+            safe = dict(doc)
+            if '_id' in safe:
+                try:
+                    safe['_id'] = str(safe['_id'])
+                except Exception:
+                    safe['_id'] = repr(safe.get('_id'))
+            if 'timestamp' in safe and hasattr(safe['timestamp'], 'isoformat'):
+                safe['timestamp'] = safe['timestamp'].isoformat()
+            safe_readings.append(safe)
+
+        return {
+            'machine_id': machine_id,
+            'count': len(safe_readings),
+            'readings': safe_readings,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")

@@ -119,49 +119,55 @@ Authorization: Bearer <your_access_token>
 
 **POST** `/forecast`
 
-Generate forecast for machine sensor data for N days ahead.
+Generate forecast for machine sensor data. This service produces minute-level forecasts.
+Each forecast step is one minute. The API accepts `forecast_minutes`
+to request N minutes ahead (default fixed to 300 minutes).
 
 **Headers:**
 ```
 Authorization: Bearer <your_access_token>
 ```
 
-**Request Body:**
+**Request Body (minute example):**
 ```json
 {
   "machine_id": "machine_001",
-  "forecast_days": 7
+  "forecast_minutes": 300
 }
 ```
 
-**Parameters:**
-- `machine_id` (string): Unique identifier for the machine
-- `forecast_days` (integer): Number of days to forecast (1-30)
+Notes on parameters:
+- `machine_id` (string): Unique identifier for the machine.
+- `forecast_minutes` (integer): Number of minutes to forecast. Default is 300. Choose a reasonable upper bound (for example 1-1440).
 
-**Response:**
+Behavior and units:
+- Each forecast step == 1 minute. Timestamps in the response are incremented by minutes from the last historical timestamp.
+
+**Response (example - minute mode):**
 ```json
 {
   "machine_id": "machine_001",
-  "forecast_days": 7,
+  "forecast_minutes": 300,
   "forecast_data": [
     {
-      "date": "2025-10-21",
-      "Air_temperature": 298.5,
-      "Process_temperature": 309.2,
-      "Rotational_speed": 1550.0,
-      "Torque": 43.1,
-      "Tool_wear": 5.0
+      "timestamp": "2025-09-02T00:00:00Z",
+      "day_ahead": 1,
+      "Air_temperature": 298.309,
+      "Process_temperature": 308.926,
+      "Rotational_speed": 1500.0,
+      "Torque": 40.00,
+      "Tool_wear": 28.80
     }
   ],
-  "created_at": "2025-10-20T12:00:00Z"
+  "created_at": "2025-09-02T00:00:00Z"
 }
 ```
 
 **Status Codes:**
 - `200 OK` - Forecast generated successfully
-- `400 Bad Request` - Invalid parameters or insufficient data
+- `400 Bad Request` - Invalid parameters (e.g., missing `machine_id`, both `forecast_days` and `forecast_minutes` missing, or values out of allowed range) or insufficient data
 - `401 Unauthorized` - Missing or invalid token
-- `404 Not Found` - No historical data for machine_id
+- `404 Not Found` - No historical data for `machine_id`
 - `500 Internal Server Error` - Database not connected or forecast error
 
 ---

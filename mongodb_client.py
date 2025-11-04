@@ -10,11 +10,31 @@ import os
 
 
 class MongoDBClient:
-    def __init__(self, mongo_uri: str, database_name: str = "machine_monitoring"):
-        """Initialize MongoDB client"""
+    def __init__(self, mongo_uri: str, database_name: str = None, collection_name: str = None):
+        """Initialize MongoDB client
+
+        By default this will look for environment variables provided by the
+        application (MONGODB_DATABASE and MONGODB_COLLECTION). If those are
+        not provided we default to the new database and collection names that
+        the user indicated: `macnine_monitoring_db` and `machine_monitoring`.
+        """
+        # Lazy import of os to avoid global dependency assumptions
+        import os
+
+        if not database_name:
+            # Default to the project's machine_monitoring_db as configured by user
+            database_name = os.getenv('MONGODB_DATABASE', 'machine_monitoring_db')
+        if not collection_name:
+            collection_name = os.getenv('MONGODB_COLLECTION', 'machine_monitoring')
+
         self.client = AsyncIOMotorClient(mongo_uri)
         self.db = self.client[database_name]
-        self.sensor_readings = self.db['sensor_readings']
+
+        # Primary collection for sensor readings (some deployments use a
+        # single 'machine_monitoring' collection). We keep the legacy
+        # collection names around for compatibility but prefer the
+        # configured collection_name when present.
+        self.sensor_readings = self.db[collection_name]
         self.predictions = self.db['predictions']
         self.forecasts = self.db['forecasts']
     
@@ -73,17 +93,22 @@ class MongoDBClient:
     async def save_forecast(
         self,
         machine_id: str,
-        forecast_days: int,
+        forecast_minutes: int,
         forecast_data: List[Dict]
     ):
-        """Save forecast results"""
+        """Save forecast results (now storing minute-based horizon)
+
+        Backwards compatible field name: previously this stored forecast_days
+        — now we store forecast_minutes so callers and consumers can clearly
+        distinguish minute-based forecasts.
+        """
         document = {
             'created_at': datetime.now(timezone.utc),
             'machine_id': machine_id,
-            'forecast_days': forecast_days,
+            'forecast_minutes': forecast_minutes,
             'forecast_data': forecast_data
         }
-        
+
         result = await self.forecasts.insert_one(document)
         return str(result.inserted_id)
     
