@@ -363,3 +363,29 @@ async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = D
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
 
+
+@app.get('/machines')
+async def list_machines(token: dict = Depends(verify_token)):
+    """Return a list of distinct machine IDs in the readings collection.
+
+    This endpoint is intentionally small and returns only the machine_id
+    values so the frontend can list available machines. It's authenticated.
+    """
+    if not mongodb_client:
+        raise HTTPException(
+            status_code=500,
+            detail="Database not connected. Please configure MONGODB_URI in .env"
+        )
+
+    try:
+        # Use the MongoDB distinct command to get unique machine_id values
+        machine_ids = await mongodb_client.sensor_readings.distinct('machine_id')
+
+        # Return as a list of objects for future extensibility
+        machines = [{'machine_id': mid} for mid in sorted(machine_ids)]
+
+        return {'count': len(machines), 'machines': machines}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
+

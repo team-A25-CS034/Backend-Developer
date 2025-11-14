@@ -202,6 +202,33 @@ curl -i -H "X-Admin-Password: Admin_Password" "http://127.0.0.1:8000/readings-du
 }
 ```
 
+### 6. List Machines
+
+**GET** `/machines`
+
+Return a list of distinct `machine_id` values present in the readings collection. This endpoint is authenticated and intended for frontend clients to discover available machines.
+
+**Headers:**
+```
+Authorization: Bearer <your_access_token>
+```
+
+**Response (example):**
+```json
+{
+  "count": 2,
+  "machines": [
+    { "machine_id": "machine_01" },
+    { "machine_id": "machine_02" }
+  ]
+}
+```
+
+Quick curl example (authenticated):
+```bash
+curl -H "Authorization: Bearer <your_access_token>" "http://127.0.0.1:8000/machines"
+```
+
 ---
 
 ## Authentication
