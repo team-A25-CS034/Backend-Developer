@@ -9,7 +9,6 @@ from passlib.context import CryptContext
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict
-from fastapi import Header
 
 # Import our custom modules
 from mongodb_client import MongoDBClient
@@ -366,51 +365,3 @@ async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = D
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
 
-
-@app.get('/readings-dump')
-async def get_recent_readings_dump(machine_id: str, limit: int = 20, x_admin_password: str = Header(None)):
-    """Return recent readings if the caller provides the admin password header.
-
-    This endpoint is intended for quick frontend inspection using the
-    project password stored in `.env`. It checks the header
-    `X-Admin-Password` against the `API_PASSWORD` environment value.
-    Do NOT expose this endpoint publicly in production.
-    """
-    # Validate admin password header
-    if not x_admin_password or x_admin_password != API_PASSWORD:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    if not mongodb_client:
-        raise HTTPException(
-            status_code=500,
-            detail="Database not connected. Please configure MONGODB_URI in .env"
-        )
-
-    try:
-        cursor = mongodb_client.sensor_readings.find(
-            {'machine_id': machine_id},
-            sort=[('timestamp', -1)]
-        ).limit(limit)
-
-        readings = await cursor.to_list(length=limit)
-
-        safe_readings = []
-        for doc in readings:
-            safe = dict(doc)
-            if '_id' in safe:
-                try:
-                    safe['_id'] = str(safe['_id'])
-                except Exception:
-                    safe['_id'] = repr(safe.get('_id'))
-            if 'timestamp' in safe and hasattr(safe['timestamp'], 'isoformat'):
-                safe['timestamp'] = safe['timestamp'].isoformat()
-            safe_readings.append(safe)
-
-        return {
-            'machine_id': machine_id,
-            'count': len(safe_readings),
-            'readings': safe_readings,
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
