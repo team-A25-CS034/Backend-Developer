@@ -170,7 +170,7 @@ Behavior and units:
 - `404 Not Found` - No historical data for `machine_id`
 - `500 Internal Server Error` - Database not connected or forecast error
 
-### Displaying Historical Data (MongoDB)
+### 5. Displaying Historical Data (MongoDB)
 
 You can fetch historical sensor readings stored in MongoDB via the backend. There are two useful endpoints:
 
@@ -179,6 +179,27 @@ You can fetch historical sensor readings stored in MongoDB via the backend. Ther
 Quick curl example (admin endpoint):
 ```bash
 curl -i -H "X-Admin-Password: Admin_Password" "http://127.0.0.1:8000/readings-dump?machine_id=machine_01&limit=10"
+```
+
+**Response (example - limit=1):**
+```json
+{
+  "machine_id": "machine_01",
+  "count": 1,
+  "readings": [
+    {
+      "timestamp": "2025-09-01T23:59:00",
+      "machine_type": "M",
+      "process_temperature": 309.1,
+      "machine_id": "machine_01",
+      "torque": 40.4,
+      "air_temperature": 298.5,
+      "tool_wear": 28.8,
+      "rotational_speed": 1500,
+      "_id": "6909bd8c79033ed1e570f233"
+    }
+  ]
+}
 ```
 
 ---
