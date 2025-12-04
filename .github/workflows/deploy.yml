@@ -1,0 +1,59 @@
+name: Deploy Backend to Cloud Run
+
+on:
+  push:
+    branches: [main, master]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: pm-api-monitoring
+  REGION: asia-southeast2
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Login ke Google Cloud
+      - name: Google Auth
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+
+      - name: Authorize Docker push
+        run: gcloud auth configure-docker
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }} .
+          docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }}
+
+      # Deploy ke Cloud Run
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy $SERVICE_NAME \
+            --region $REGION \
+            --image gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --memory=2Gi \
+            --cpu=1 \
+            --set-env-vars "MONGODB_URI=${{ secrets.MONGODB_URI }}" \
+            --set-env-vars "MONGODB_DATABASE=${{ secrets.MONGODB_DATABASE }}" \
+            --set-env-vars "MONGODB_COLLECTION=${{ secrets.MONGODB_COLLECTION }}" \
+            --set-env-vars "ACCESS_TOKEN_KEY=${{ secrets.ACCESS_TOKEN_KEY }}" \
+            --set-env-vars "REFRESH_TOKEN_KEY=${{ secrets.REFRESH_TOKEN_KEY }}" \
+            --set-env-vars "ACCESS_TOKEN_AGE=${{ secrets.ACCESS_TOKEN_AGE }}" \
+            --set-env-vars "API_USERNAME=admin" \
+            --set-env-vars "API_PASSWORD=${{ secrets.API_PASSWORD }}"
+
+      - name: Log deployment URL
+        run: |
+          echo "🚀 Backend deployment complete!"
+          gcloud run services describe $SERVICE_NAME --region=$REGION --format='value(status.url)'
