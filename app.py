@@ -1,4 +1,7 @@
+from services.classifier_service import load_classifier_resources, predict_prompt_type
+import aiofiles
 from fastapi import FastAPI, HTTPException, Depends, status
+from services.pos_service import load_pos_resources, predict_pos
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import os
@@ -17,6 +20,8 @@ from classification import initialize_classifier, get_classifier
 
 # Load environment variables
 load_dotenv()
+LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), 'logs', 'user_llm_conversation.txt')
+os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
 
 # MongoDB configuration
 MONGODB_URI = os.getenv('MONGODB_URI')
@@ -38,6 +43,10 @@ async def lifespan(app: FastAPI):
     if MONGODB_URI:
         # Pass database and collection name into the client so it can
         # connect to the correct DB / collection layout.
+        CLASSIFIER_DIR = os.path.join(os.path.dirname(__file__), 'models', 'prompt_classifier')
+        POS_MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')
+        load_pos_resources(POS_MODEL_DIR)
+        load_classifier_resources(CLASSIFIER_DIR)
         mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE, MONGODB_COLLECTION)
         print(f"✅ Connected to MongoDB: {MONGODB_DATABASE} (collection={MONGODB_COLLECTION})")
     else:
@@ -88,7 +97,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'classifier.h5')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'classifier.h5')
 
 class InputSample(BaseModel):
     Air_temperature: float
@@ -389,3 +398,50 @@ async def list_machines(token: dict = Depends(verify_token)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
 
+class TextRequest(BaseModel):
+    text: str
+
+@app.post('/predict/pos')
+def get_pos_tags(request: TextRequest, token: dict = Depends(verify_token)):
+    """
+    Extract entities (POS Tags) from text.
+    """
+    try:
+        result = predict_pos(request.text)
+        return {
+            "status": "success",
+            "original_text": request.text,
+            "entities": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class TextPayload(BaseModel):
+    text: str
+
+@app.post('/predict/classifier')
+async def classify_prompt(payload: TextPayload, token: dict = Depends(verify_token)):
+    try:
+        # 1. Prediksi
+        result = predict_prompt_type(payload.text)
+        
+        # 2. Logging (Lebih Aman)
+        try:
+            # Gunakan .get() agar tidak error jika key tidak ada
+            label_result = result.get('label', 'unknown') 
+            log_entry = f"{payload.text}|{label_result}\n"
+            
+            async with aiofiles.open(LOG_FILE_PATH, mode='a', encoding='utf-8') as f:
+                await f.write(log_entry)
+        except Exception as log_error:
+            # Print error tapi JANGAN raise exception, agar user tetap dapat jawaban
+            print(f"⚠️ Warning: Gagal menyimpan log: {log_error}")
+
+        return {
+            "original_text": payload.text,
+            "classification": result
+        }
+
+    except Exception as e:
+        # Error fatal dalam prediksi
+        raise HTTPException(status_code=500, detail=str(e))

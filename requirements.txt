@@ -11,3 +11,9 @@ python-multipart
 python-dotenv
 motor
 skforecast
+tensorflow
+numpy
+pickle-mixin
+aiofiles
+category_encoders
+dill
