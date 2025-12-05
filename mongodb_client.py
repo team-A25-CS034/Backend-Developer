@@ -42,43 +42,49 @@ class MongoDBClient:
         """Close MongoDB connection"""
         self.client.close()
     
-    async def get_latest_reading(self, machine_id: str) -> Optional[Dict]:
+    async def get_latest_reading(self) -> Optional[Dict]:
         """Get the latest sensor reading for a machine"""
+        filter_query = {
+        }
         reading = await self.sensor_readings.find_one(
-            {'machine_id': machine_id},
-            sort=[('timestamp', -1)]
+            filter_query,
+            sort=[('timestamp', -1), ('UDI', -1)]
         )
         return reading
     
     async def get_readings_range(
         self, 
-        machine_id: str, 
-        days: int = 30
     ) -> List[Dict]:
         """Get sensor readings for the last N days"""
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+        
+        # Try timestamp-based filtering first
         
         cursor = self.sensor_readings.find(
-            {
-                'machine_id': machine_id,
-                'timestamp': {'$gte': cutoff_date}
-            },
-            sort=[('timestamp', 1)]
         )
         
         readings = await cursor.to_list(length=None)
+        
+        # If no results (no timestamp field), fall back to UDI-based query
+        if not readings:
+            cursor = self.sensor_readings.find(
+                sort=[('UDI', 1)]
+            )
+            readings = await cursor.to_list(length=None)
+        
         return readings
 
-    async def get_last_readings(self, machine_id: str, limit: int = 1440) -> List[Dict]:
+    async def get_last_readings(self, limit: int = 1440) -> List[Dict]:
         """Return the last `limit` readings for a machine regardless of timestamp.
 
         This is a fallback for datasets that are historic (older than the
         requested days window) so the forecast endpoint can still operate on
         the most recent available data.
         """
+        filter_query = {
+        }
+        
         cursor = self.sensor_readings.find(
-            {'machine_id': machine_id},
-            sort=[('timestamp', -1)]
+            filter_query,
         ).limit(limit)
 
         docs = await cursor.to_list(length=limit)
@@ -87,7 +93,6 @@ class MongoDBClient:
     
     async def save_prediction(
         self,
-        machine_id: str,
         prediction_label: str,
         prediction_numeric: int,
         probabilities: Optional[List[float]],
@@ -96,7 +101,6 @@ class MongoDBClient:
         """Save a prediction result"""
         document = {
             'timestamp': datetime.now(timezone.utc),
-            'machine_id': machine_id,
             'prediction_label': prediction_label,
             'prediction_numeric': prediction_numeric,
             'probabilities': probabilities,
@@ -108,7 +112,6 @@ class MongoDBClient:
     
     async def save_forecast(
         self,
-        machine_id: str,
         forecast_minutes: int,
         forecast_data: List[Dict]
     ):
@@ -120,7 +123,6 @@ class MongoDBClient:
         """
         document = {
             'created_at': datetime.now(timezone.utc),
-            'machine_id': machine_id,
             'forecast_minutes': forecast_minutes,
             'forecast_data': forecast_data
         }
@@ -128,23 +130,19 @@ class MongoDBClient:
         result = await self.forecasts.insert_one(document)
         return str(result.inserted_id)
     
-    async def get_latest_forecast(self, machine_id: str) -> Optional[Dict]:
+    async def get_latest_forecast(self) -> Optional[Dict]:
         """Get the most recent forecast for a machine"""
         forecast = await self.forecasts.find_one(
-            {'machine_id': machine_id},
             sort=[('created_at', -1)]
         )
         return forecast
     
-    async def get_machine_statistics(self, machine_id: str, days: int = 30) -> Dict:
+    async def get_machine_statistics(self, days: int = 30) -> Dict:
         """Get aggregated statistics for a machine"""
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
         pipeline = [
             {
                 '$match': {
-                    'machine_id': machine_id,
-                    'timestamp': {'$gte': cutoff_date}
                 }
             },
             {

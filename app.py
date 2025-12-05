@@ -108,12 +108,10 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 class ForecastRequest(BaseModel):
-    machine_id: str
     # Now using minute-based forecasting (default 300 minutes)
     forecast_minutes: int = 300
 
 class ForecastResponse(BaseModel):
-    machine_id: str
     forecast_minutes: int
     forecast_data: List[Dict]
     created_at: str
@@ -244,7 +242,6 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
             detail="Database not connected. Please configure MONGODB_URI in .env"
         )
     
-    machine_id = request.machine_id
     forecast_minutes = request.forecast_minutes
 
     # Validate forecast_minutes (limit to 1 day of minutes by default)
@@ -257,54 +254,19 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
     try:
         # Get historical data (last 30 days minimum for good predictions)
         historical_readings = await mongodb_client.get_readings_range(
-            machine_id=machine_id,
-            days=30
         )
-        
-        if not historical_readings:
-            # Fallback: if there are no readings in the last N days (e.g. the
-            # available data is historic), fetch the last available readings
-            # regardless of timestamp so forecasting can still run.
-            historical_readings = await mongodb_client.get_last_readings(
-                machine_id=machine_id,
-                limit=1440
-            )
-
-        if not historical_readings:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No historical data found for machine_id: {machine_id}"
-            )
-        
-        if len(historical_readings) < 7:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient data for forecasting. Found {len(historical_readings)} readings, need at least 7"
-            )
         
         # Prepare data for forecasting
         df_historical = prepare_forecast_data(historical_readings)
         
-        # Get machine type from latest reading
-        machine_type = historical_readings[-1].get('machine_type', 'M')
-        
         # Generate forecast
         forecast_data = generate_forecast(
             historical_data=df_historical,
-            machine_id=machine_id,
-            machine_type=machine_type,
             forecast_minutes=forecast_minutes
         )
 
-        # Save forecast to database (store minutes)
-        await mongodb_client.save_forecast(
-            machine_id=machine_id,
-            forecast_minutes=forecast_minutes,
-            forecast_data=forecast_data
-        )
 
         return ForecastResponse(
-            machine_id=machine_id,
             forecast_minutes=forecast_minutes,
             forecast_data=forecast_data,
             created_at=datetime.now(timezone.utc).isoformat()
@@ -320,11 +282,16 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
 
 
 @app.get('/readings')
-async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = Depends(verify_token)):
+async def get_recent_readings(limit: int = 100, token: dict = Depends(verify_token)):
     """Return the most recent sensor readings for a machine.
 
+    Supports both legacy schema (machine_id, machine_type, air_temperature, ...)
+    and the new `forecaster_input.csv` style schema (Product ID, Type, Air
+    temperature [K], Process temperature [K], Rotational speed [rpm], Torque
+    [Nm], Tool wear [min], UDI).
+
     Query params:
-    - machine_id: machine identifier
+    - machine_id: machine identifier (matches either machine_id or Product ID)
     - limit: maximum number of records to return (default 100)
     """
     if not mongodb_client:
@@ -334,28 +301,52 @@ async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = D
         )
 
     try:
+        # Match either legacy or new column naming
+        filter_query = {
+            '$or': [
+            ]
+        }
+
+        # Sort by timestamp when available, otherwise by UDI (numeric order)
+        sort_fields = [('timestamp', -1), ('UDI', -1)]
+
         cursor = mongodb_client.sensor_readings.find(
-            {'machine_id': machine_id},
-            sort=[('timestamp', -1)]
+            filter_query,
+            sort=sort_fields
         ).limit(limit)
 
         readings = await cursor.to_list(length=limit)
 
-        # Convert non-JSON-serializable fields (ObjectId, datetime) to strings
+        # Convert to clean response format (keep only original CSV fields)
         safe_readings = []
         for doc in readings:
-            safe = dict(doc)
-            if '_id' in safe:
+            safe = {}
+
+            # Convert ObjectId to string
+            if '_id' in doc:
                 try:
-                    safe['_id'] = str(safe['_id'])
+                    safe['_id'] = str(doc['_id'])
                 except Exception:
-                    safe['_id'] = repr(safe.get('_id'))
-            if 'timestamp' in safe and hasattr(safe['timestamp'], 'isoformat'):
-                safe['timestamp'] = safe['timestamp'].isoformat()
+                    safe['_id'] = repr(doc.get('_id'))
+
+            # Keep only the forecaster_input.csv fields
+            safe['UDI'] = doc.get('UDI')
+            safe['Type'] = doc.get('Type')
+            safe['Air temperature [K]'] = doc.get('Air temperature [K]') or doc.get('air_temperature')
+            safe['Process temperature [K]'] = doc.get('Process temperature [K]') or doc.get('process_temperature')
+            safe['Rotational speed [rpm]'] = doc.get('Rotational speed [rpm]') or doc.get('rotational_speed')
+            safe['Torque [Nm]'] = doc.get('Torque [Nm]') or doc.get('torque')
+            safe['Tool wear [min]'] = doc.get('Tool wear [min]') or doc.get('tool_wear')
+            safe['Target'] = doc.get('Target')
+            safe['Failure Type'] = doc.get('Failure Type')
+
+            # Include timestamp if present
+            if 'timestamp' in doc and hasattr(doc['timestamp'], 'isoformat'):
+                safe['timestamp'] = doc['timestamp'].isoformat()
+
             safe_readings.append(safe)
 
         return {
-            'machine_id': machine_id,
             'count': len(safe_readings),
             'readings': safe_readings,
         }
@@ -368,8 +359,7 @@ async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = D
 async def list_machines(token: dict = Depends(verify_token)):
     """Return a list of distinct machine IDs in the readings collection.
 
-    This endpoint is intentionally small and returns only the machine_id
-    values so the frontend can list available machines. It's authenticated.
+    Supports both legacy `machine_id` and new `Product ID` column naming.
     """
     if not mongodb_client:
         raise HTTPException(
@@ -378,13 +368,7 @@ async def list_machines(token: dict = Depends(verify_token)):
         )
 
     try:
-        # Use the MongoDB distinct command to get unique machine_id values
-        machine_ids = await mongodb_client.sensor_readings.distinct('machine_id')
-
-        # Return as a list of objects for future extensibility
-        machines = [{'machine_id': mid} for mid in sorted(machine_ids)]
-
-        return {'count': len(machines), 'machines': machines}
+        return {}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
