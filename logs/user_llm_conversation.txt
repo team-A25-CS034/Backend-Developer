@@ -18,3 +18,6 @@ Mesin 5 mati mendadak|unknown
 Mesin 5 mati mendadak|unknown
 Buat prediksi suhu udara Mesin 1 untuk sisa shift ini.|suhu udara
 Mesin 195 harus diapakan?|saran perbaikan
+apakah anda bisa memprediksi prediksi suhu udara Mesin 9 untuk 180 menit.|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
