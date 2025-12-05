@@ -1,6 +1,7 @@
 from services.classifier_service import load_classifier_resources, predict_prompt_type
 import aiofiles
-from fastapi import FastAPI, HTTPException, Depends, status
+import pandas as pd 
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from services.pos_service import load_pos_resources, predict_pos
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -12,6 +13,11 @@ from passlib.context import CryptContext
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict
+import os
+import tensorflow as tf
+import joblib 
+import pickle 
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # Import our custom modules
 from mongodb_client import MongoDBClient
@@ -21,17 +27,29 @@ from classification import initialize_classifier, get_classifier
 # Load environment variables
 load_dotenv()
 LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), 'logs', 'user_llm_conversation.txt')
+PI_MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'prompt_injection', 'model.keras')
+PI_LABEL_ENCODER_PATH = os.path.join(os.path.dirname(__file__), 'models', 'prompt_injection', 'label_encoder.joblib')
+PI_TOKENIZER_PATH = os.path.join(os.path.dirname(__file__), 'models', 'prompt_injection', 'tokenizer.pickle')
 os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
 
 # MongoDB configuration
 MONGODB_URI = os.getenv('MONGODB_URI')
-# Default database and collection updated to match the new deployment
 MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'machine_monitoring_db')
 MONGODB_COLLECTION = os.getenv('MONGODB_COLLECTION', 'machine_monitoring')
 
+try:
+    pi_model = tf.keras.models.load_model(PI_MODEL_PATH)
+    pi_label_encoder = joblib.load(PI_LABEL_ENCODER_PATH)
+    with open(PI_TOKENIZER_PATH, 'rb') as handle:
+        pi_tokenizer = pickle.load(handle)
+    print("Prompt Injection Model loaded successfully.")
+    PI_MAX_LEN = 120 
+except Exception as e:
+    print(f"Failed to load Prompt Injection Model: {e}")
+    pi_model = None
+
 # Global MongoDB client
 mongodb_client: Optional[MongoDBClient] = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -350,7 +368,6 @@ async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = D
 
         readings = await cursor.to_list(length=limit)
 
-        # Convert non-JSON-serializable fields (ObjectId, datetime) to strings
         safe_readings = []
         for doc in readings:
             safe = dict(doc)
@@ -375,11 +392,6 @@ async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = D
 
 @app.get('/machines')
 async def list_machines(token: dict = Depends(verify_token)):
-    """Return a list of distinct machine IDs in the readings collection.
-
-    This endpoint is intentionally small and returns only the machine_id
-    values so the frontend can list available machines. It's authenticated.
-    """
     if not mongodb_client:
         raise HTTPException(
             status_code=500,
@@ -387,10 +399,8 @@ async def list_machines(token: dict = Depends(verify_token)):
         )
 
     try:
-        # Use the MongoDB distinct command to get unique machine_id values
         machine_ids = await mongodb_client.sensor_readings.distinct('machine_id')
 
-        # Return as a list of objects for future extensibility
         machines = [{'machine_id': mid} for mid in sorted(machine_ids)]
 
         return {'count': len(machines), 'machines': machines}
@@ -403,9 +413,6 @@ class TextRequest(BaseModel):
 
 @app.post('/predict/pos')
 def get_pos_tags(request: TextRequest, token: dict = Depends(verify_token)):
-    """
-    Extract entities (POS Tags) from text.
-    """
     try:
         result = predict_pos(request.text)
         return {
@@ -422,20 +429,16 @@ class TextPayload(BaseModel):
 @app.post('/predict/classifier')
 async def classify_prompt(payload: TextPayload, token: dict = Depends(verify_token)):
     try:
-        # 1. Prediksi
         result = predict_prompt_type(payload.text)
         
-        # 2. Logging (Lebih Aman)
         try:
-            # Gunakan .get() agar tidak error jika key tidak ada
             label_result = result.get('label', 'unknown') 
             log_entry = f"{payload.text}|{label_result}\n"
             
             async with aiofiles.open(LOG_FILE_PATH, mode='a', encoding='utf-8') as f:
                 await f.write(log_entry)
         except Exception as log_error:
-            # Print error tapi JANGAN raise exception, agar user tetap dapat jawaban
-            print(f"⚠️ Warning: Gagal menyimpan log: {log_error}")
+            print(f"log: {log_error}")
 
         return {
             "original_text": payload.text,
@@ -443,5 +446,43 @@ async def classify_prompt(payload: TextPayload, token: dict = Depends(verify_tok
         }
 
     except Exception as e:
-        # Error fatal dalam prediksi
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/predict/injection")
+async def predict_injection(request: Request):
+    if pi_model is None:
+        raise HTTPException(status_code=503, detail="Prompt Injection model not available.")
+
+    try:
+        data = await request.json()
+        text = data.get("prompt", "")
+
+        cleaned_text = text.lower().strip()
+
+        sequences = pi_tokenizer.texts_to_sequences([cleaned_text])
+        padded_sequences = pad_sequences(sequences, maxlen=PI_MAX_LEN, padding='post', truncating='post')
+
+        predictions = pi_model.predict(padded_sequences)
+        predicted_class_index = int(tf.argmax(predictions[0]).numpy())
+        confidence = float(predictions[0][predicted_class_index])
+        
+        try:
+            predicted_label = pi_label_encoder.inverse_transform([predicted_class_index])[0]
+        except Exception:
+            df_pred = pd.DataFrame([predicted_class_index], columns=['Malicious'])
+            decoded_df = pi_label_encoder.inverse_transform(df_pred)
+            predicted_label = decoded_df['Malicious'].iloc[0]
+
+        is_malicious = predicted_label == "Yes"
+
+        return {
+            "prompt": text,
+            "is_malicious": is_malicious,
+            "classification": {
+                "label": predicted_label,
+                "confidence": confidence
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error during injection prediction: {e}")
