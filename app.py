@@ -425,3 +425,91 @@ def serialize_readings(readings: List[Dict]) -> List[Dict]:
         safe_readings.append(safe)
     return safe_readings
 
+
+def _safe_number(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def normalize_for_classifier(doc: Dict, fallback_type: Optional[str] = None) -> Optional[Dict]:
+    """Normalize a Mongo reading into the features the classifier expects."""
+    air = doc.get('Air temperature [K]') or doc.get('air_temperature') or doc.get('Air temperature')
+    proc = doc.get('Process temperature [K]') or doc.get('process_temperature') or doc.get('Process temperature')
+    rot = doc.get('Rotational speed [rpm]') or doc.get('rotational_speed') or doc.get('Rotational speed')
+    tor = doc.get('Torque [Nm]') or doc.get('torque') or doc.get('Torque')
+    wear = doc.get('Tool wear [min]') or doc.get('tool_wear') or doc.get('Tool wear')
+    mtype = doc.get('Type') or doc.get('machine_type') or doc.get('Machine type')
+
+    # fallback: infer type from machine ID prefix
+    if not mtype and fallback_type:
+        mtype = fallback_type
+    if not mtype:
+        mid = doc.get('Machine ID') or doc.get('machine_id') or ''
+        mtype = str(mid)[:1] if mid else None
+
+    air = _safe_number(air)
+    proc = _safe_number(proc)
+    rot = _safe_number(rot)
+    tor = _safe_number(tor)
+    wear = _safe_number(wear)
+    mtype = str(mtype) if mtype is not None else None
+
+    if None in (air, proc, rot, tor, wear, mtype):
+        return None
+
+    return {
+        'air_temperature': air,
+        'process_temperature': proc,
+        'rotational_speed': rot,
+        'torque': tor,
+        'tool_wear': wear,
+        'machine_type': mtype,
+    }
+
+
+@app.get('/machine-status')
+async def machine_status(token: dict = Depends(verify_token)):
+    """Return latest classification per machine ID using the most recent reading."""
+    ensure_db_connected()
+    classifier = get_classifier()
+    if not classifier or not classifier.is_loaded():
+        raise HTTPException(status_code=500, detail='Model not loaded on server')
+
+    try:
+        machine_ids = await mongodb_client.sensor_readings.distinct('Machine ID')
+        machine_ids = [mid for mid in machine_ids if mid]
+        results = []
+
+        for mid in machine_ids:
+            cursor = mongodb_client.sensor_readings.find({'Machine ID': mid}).sort([('timestamp', -1), ('UDI', -1)]).limit(1)
+            docs = await cursor.to_list(length=1)
+            if not docs:
+                results.append({'machine_id': mid, 'status': 'no-data'})
+                continue
+
+            reading = docs[0]
+            payload = normalize_for_classifier(reading, fallback_type=str(mid)[:1])
+            if not payload:
+                results.append({'machine_id': mid, 'status': 'missing-required-fields'})
+                continue
+
+            try:
+                pred = classifier.predict(**payload)
+                results.append({
+                    'machine_id': mid,
+                    'prediction_numeric': pred.get('prediction_numeric'),
+                    'prediction_label': pred.get('prediction_label'),
+                    'probabilities': pred.get('probabilities'),
+                    'timestamp': reading.get('timestamp'),
+                })
+            except Exception as e:
+                results.append({'machine_id': mid, 'status': 'error', 'detail': str(e)})
+
+        return {'count': len(results), 'machines': results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating machine status: {e}")
+

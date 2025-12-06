@@ -5,7 +5,6 @@ from sklearn.linear_model import LinearRegression
 from skforecast.recursive import ForecasterRecursive
 from sklearn.svm import SVR
 from typing import Dict, List
-from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

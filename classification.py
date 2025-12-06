@@ -5,8 +5,7 @@ Handles model loading and prediction logic
 
 import joblib
 import pandas as pd
-import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 
 # Mapping for Type ordinal encoding
@@ -144,57 +143,6 @@ class MachineClassifier:
                 result['probabilities'] = None
         
         return result
-    
-    def predict_from_dict(self, data: Dict) -> Dict:
-        """
-        Predict from dictionary input (more flexible)
-        
-        Args:
-            data: Dictionary with keys matching expected feature names
-                  (case-insensitive, with or without underscores)
-        
-        Returns:
-            Dictionary with prediction results
-        """
-        # Normalize keys (handle both snake_case and Title Case)
-        normalized_data = {}
-        
-        key_mapping = {
-            'air_temperature': 'Air temperature',
-            'process_temperature': 'Process temperature',
-            'rotational_speed': 'Rotational speed',
-            'torque': 'Torque',
-            'tool_wear': 'Tool wear',
-            'type': 'Type',
-            'machine_type': 'Type'
-        }
-        
-        for key, value in data.items():
-            normalized_key = key.lower().replace(' ', '_')
-            if normalized_key in key_mapping:
-                feature_name = key_mapping[normalized_key]
-                normalized_data[feature_name] = value
-        
-        # Extract values
-        air_temp = normalized_data.get('Air temperature')
-        process_temp = normalized_data.get('Process temperature')
-        rot_speed = normalized_data.get('Rotational speed')
-        torque = normalized_data.get('Torque')
-        tool_wear = normalized_data.get('Tool wear')
-        machine_type = normalized_data.get('Type')
-        
-        # Validate all required fields are present
-        if None in [air_temp, process_temp, rot_speed, torque, tool_wear, machine_type]:
-            raise ValueError(f'Missing required fields. Got: {list(data.keys())}')
-        
-        return self.predict(
-            air_temperature=air_temp,
-            process_temperature=process_temp,
-            rotational_speed=rot_speed,
-            torque=torque,
-            tool_wear=tool_wear,
-            machine_type=machine_type
-        )
 
 
 # Singleton instance (will be initialized in app.py)
