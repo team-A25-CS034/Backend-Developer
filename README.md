@@ -174,11 +174,12 @@ Behavior and units:
 
 You can fetch historical sensor readings stored in MongoDB via the backend. There are two useful endpoints:
 
-- **Authenticated**: `GET /readings?machine_id=<id>&limit=<n>` — requires a valid JWT in the `Authorization: Bearer <token>` header and returns recent readings for the machine.
+- **Authenticated**: `GET /readings?limit=<n>` — requires a valid JWT in the `Authorization: Bearer <token>` header and returns recent readings for the machine.
 
 Quick curl example (admin endpoint):
 ```bash
-curl -i -H "X-Admin-Password: Admin_Password" "http://127.0.0.1:8000/readings-dump?machine_id=machine_01&limit=10"
+curl -s "http://localhost:8000/readings?limit=500" \
+-H "Authorization: Bearer <TOKEN>"
 ```
 
 **Response (example - limit=1):**

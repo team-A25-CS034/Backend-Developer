@@ -282,17 +282,12 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
 
 
 @app.get('/readings')
-async def get_recent_readings(limit: int = 100, token: dict = Depends(verify_token)):
-    """Return the most recent sensor readings for a machine.
+async def get_recent_readings(machine_id: Optional[str] = None, limit: int = 100, token: dict = Depends(verify_token)):
+    """Return recent sensor readings.
 
-    Supports both legacy schema (machine_id, machine_type, air_temperature, ...)
-    and the new `forecaster_input.csv` style schema (Product ID, Type, Air
-    temperature [K], Process temperature [K], Rotational speed [rpm], Torque
-    [Nm], Tool wear [min], UDI).
-
-    Query params:
-    - machine_id: machine identifier (matches either machine_id or Product ID)
-    - limit: maximum number of records to return (default 100)
+    If `machine_id` is provided, it will filter by that ID across legacy and
+    forecaster_input column names. If omitted, it returns recent rows from all
+    machines.
     """
     if not mongodb_client:
         raise HTTPException(
@@ -301,11 +296,17 @@ async def get_recent_readings(limit: int = 100, token: dict = Depends(verify_tok
         )
 
     try:
-        # Match either legacy or new column naming
-        filter_query = {
-            '$or': [
-            ]
-        }
+        # Build filter: if machine_id provided, match any known id fields; else match all
+        if machine_id:
+            filter_query = {
+                '$or': [
+                    {'machine_id': machine_id},
+                    {'product_id': machine_id},
+                    {'Product ID': machine_id}
+                ]
+            }
+        else:
+            filter_query = {}
 
         # Sort by timestamp when available, otherwise by UDI (numeric order)
         sort_fields = [('timestamp', -1), ('UDI', -1)]
@@ -331,7 +332,8 @@ async def get_recent_readings(limit: int = 100, token: dict = Depends(verify_tok
 
             # Keep only the forecaster_input.csv fields
             safe['UDI'] = doc.get('UDI')
-            safe['Type'] = doc.get('Type')
+            safe['Product ID'] = doc.get('Product ID') or doc.get('product_id') or doc.get('machine_id')
+            safe['Type'] = doc.get('Type') or doc.get('machine_type')
             safe['Air temperature [K]'] = doc.get('Air temperature [K]') or doc.get('air_temperature')
             safe['Process temperature [K]'] = doc.get('Process temperature [K]') or doc.get('process_temperature')
             safe['Rotational speed [rpm]'] = doc.get('Rotational speed [rpm]') or doc.get('rotational_speed')
