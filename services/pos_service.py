@@ -11,7 +11,7 @@ _max_len = 50
 
 def load_pos_resources(model_dir: str):
     global _model, _word_to_int, _int_to_label, _max_len
-
+    
     try:
         model_path = os.path.join(model_dir, 'POS.keras')
         _model = tf.keras.models.load_model(model_path)
@@ -30,40 +30,39 @@ def load_pos_resources(model_dir: str):
         
     except Exception as e:
         print(f"Error loading POS resources: {e}")
-        raise e
 
 def predict_pos(text: str):
     if _model is None:
-        raise RuntimeError("POS Model belum dimuat. Pastikan load_pos_resources dipanggil.")
+        raise RuntimeError("POS Model belum dimuat/rusak.")
 
-    original_words = text.strip().lower().split()
+    original_words = text.split()
+    original_len = len(original_words)
     
-    pad_token = _word_to_int.get('PAD', 0) 
+    pad_token_id = _word_to_int.get("PAD", 0) 
     
-    int_sequence = [
-        _word_to_int.get(word, pad_token) for word in original_words
-    ]
+    int_sequence = []
+    for word in original_words:
+        word_idx = _word_to_int.get(word.lower(), pad_token_id)
+        int_sequence.append(word_idx)
     
     padded_sequence = pad_sequences(
         [int_sequence], 
         maxlen=_max_len, 
         padding='post', 
-        value=pad_token
+        value=pad_token_id
     )
     
     predicted_probs = _model.predict(padded_sequence, verbose=0)
     predicted_labels_int = np.argmax(predicted_probs, axis=-1)[0]
     
-    original_len = len(original_words)
-    result_labels = []
-    
+    results = []
     for i in range(min(original_len, _max_len)):
         idx = predicted_labels_int[i]
         label = _int_to_label.get(idx, "O")
-        result_labels.append(label)
         
-    response = []
-    for word, label in zip(original_words, result_labels):
-        response.append({"word": word, "entity": label})
+        results.append({
+            "word": original_words[i],
+            "entity": label
+        })
         
-    return response
+    return results

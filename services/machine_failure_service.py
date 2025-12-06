@@ -219,3 +219,50 @@ def initialize_classifier(model_path: str) -> MachineClassifier:
 def get_classifier() -> Optional[MachineClassifier]:
     """Get the global classifier instance"""
     return classifier
+
+def _safe_number(value):
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+def normalize_for_classifier(doc: Dict, fallback_type: Optional[str] = None) -> Optional[Dict]:
+    """
+    Menormalkan data dari MongoDB agar sesuai dengan input Model Classifier.
+    Menangani perbedaan nama kolom (misal: 'Air temperature [K]' vs 'air_temperature').
+    """
+    # Coba berbagai variasi key yang mungkin ada di database
+    air = doc.get('Air temperature [K]') or doc.get('air_temperature') or doc.get('Air temperature')
+    proc = doc.get('Process temperature [K]') or doc.get('process_temperature') or doc.get('Process temperature')
+    rot = doc.get('Rotational speed [rpm]') or doc.get('rotational_speed') or doc.get('Rotational speed')
+    tor = doc.get('Torque [Nm]') or doc.get('torque') or doc.get('Torque')
+    wear = doc.get('Tool wear [min]') or doc.get('tool_wear') or doc.get('Tool wear')
+    mtype = doc.get('Type') or doc.get('machine_type') or doc.get('Machine type')
+
+    # Fallback type dari Machine ID (misal M01 -> Type M)
+    if not mtype and fallback_type:
+        mtype = fallback_type
+    if not mtype:
+        mid = doc.get('Machine ID') or doc.get('machine_id') or ''
+        mtype = str(mid)[:1] if mid else None
+
+    # Convert ke tipe data yang aman
+    air = _safe_number(air)
+    proc = _safe_number(proc)
+    rot = _safe_number(rot)
+    tor = _safe_number(tor)
+    wear = _safe_number(wear)
+    mtype = str(mtype) if mtype is not None else None
+
+    # Validasi kelengkapan data
+    if None in (air, proc, rot, tor, wear, mtype):
+        return None
+
+    return {
+        'air_temperature': air,
+        'process_temperature': proc,
+        'rotational_speed': rot,
+        'torque': tor,
+        'tool_wear': wear,
+        'machine_type': mtype,
+    }
