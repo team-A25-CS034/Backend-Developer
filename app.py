@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import os
+import logging
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta, timezone
 import jwt
@@ -80,6 +81,8 @@ origins = [
     "http://127.0.0.1:3000",
 ]
 
+logger = logging.getLogger(__name__)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -112,6 +115,12 @@ class ForecastRequest(BaseModel):
     forecast_minutes: int = 300
 
 class ForecastResponse(BaseModel):
+    forecast_minutes: int
+    forecast_data: List[Dict]
+    created_at: str
+
+class TimelineResponse(BaseModel):
+    last_readings: List[Dict]
     forecast_minutes: int
     forecast_data: List[Dict]
     created_at: str
@@ -282,12 +291,11 @@ async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)
 
 
 @app.get('/readings')
-async def get_recent_readings(machine_id: Optional[str] = None, limit: int = 100, token: dict = Depends(verify_token)):
-    """Return recent sensor readings.
+async def list_machines(machine_id: Optional[str] = None, token: dict = Depends(verify_token)):
+    """Return machine data from the readings collection.
 
-    If `machine_id` is provided, it will filter by that ID across legacy and
-    forecaster_input column names. If omitted, it returns recent rows from all
-    machines.
+    If machine_id is provided, return all sensor readings for that specific machine.
+    If machine_id is not provided, return a list of distinct Machine IDs.
     """
     if not mongodb_client:
         raise HTTPException(
@@ -296,82 +304,124 @@ async def get_recent_readings(machine_id: Optional[str] = None, limit: int = 100
         )
 
     try:
-        # Build filter: if machine_id provided, match any known id fields; else match all
         if machine_id:
-            filter_query = {
-                '$or': [
-                    {'machine_id': machine_id},
-                    {'product_id': machine_id},
-                    {'Product ID': machine_id}
-                ]
+            # Fetch all data for the specified machine
+            filter_query = {'Machine ID': machine_id}
+            cursor = mongodb_client.sensor_readings.find(filter_query)
+            readings = await cursor.to_list(length=None)
+            
+            if not readings:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No data found for machine ID: {machine_id}"
+                )
+            
+            # Convert ObjectId to string
+            safe_readings = []
+            for doc in readings:
+                safe = {}
+                if '_id' in doc:
+                    try:
+                        safe['_id'] = str(doc['_id'])
+                    except Exception:
+                        safe['_id'] = repr(doc.get('_id'))
+                
+                # Include all fields from the document
+                for key, value in doc.items():
+                    if key != '_id':
+                        if hasattr(value, 'isoformat'):
+                            safe[key] = value.isoformat()
+                        else:
+                            safe[key] = value
+                
+                safe_readings.append(safe)
+            
+            return {
+                'machine_id': machine_id,
+                'count': len(safe_readings),
+                'data': safe_readings
             }
         else:
-            filter_query = {}
+            # Return list of distinct Machine IDs
+            machine_ids = await mongodb_client.sensor_readings.distinct('Machine ID')
+            machine_ids = [mid for mid in machine_ids if mid]
+            return {
+                'count': len(machine_ids),
+                'machine_ids': machine_ids
+            }
 
-        # Sort by timestamp when available, otherwise by UDI (numeric order)
-        sort_fields = [('timestamp', -1), ('UDI', -1)]
-
-        cursor = mongodb_client.sensor_readings.find(
-            filter_query,
-            sort=sort_fields
-        ).limit(limit)
-
-        readings = await cursor.to_list(length=limit)
-
-        # Convert to clean response format (keep only original CSV fields)
-        safe_readings = []
-        for doc in readings:
-            safe = {}
-
-            # Convert ObjectId to string
-            if '_id' in doc:
-                try:
-                    safe['_id'] = str(doc['_id'])
-                except Exception:
-                    safe['_id'] = repr(doc.get('_id'))
-
-            # Keep only the forecaster_input.csv fields
-            safe['UDI'] = doc.get('UDI')
-            safe['Product ID'] = doc.get('Product ID') or doc.get('product_id') or doc.get('machine_id')
-            safe['Type'] = doc.get('Type') or doc.get('machine_type')
-            safe['Air temperature [K]'] = doc.get('Air temperature [K]') or doc.get('air_temperature')
-            safe['Process temperature [K]'] = doc.get('Process temperature [K]') or doc.get('process_temperature')
-            safe['Rotational speed [rpm]'] = doc.get('Rotational speed [rpm]') or doc.get('rotational_speed')
-            safe['Torque [Nm]'] = doc.get('Torque [Nm]') or doc.get('torque')
-            safe['Tool wear [min]'] = doc.get('Tool wear [min]') or doc.get('tool_wear')
-            safe['Target'] = doc.get('Target')
-            safe['Failure Type'] = doc.get('Failure Type')
-
-            # Include timestamp if present
-            if 'timestamp' in doc and hasattr(doc['timestamp'], 'isoformat'):
-                safe['timestamp'] = doc['timestamp'].isoformat()
-
-            safe_readings.append(safe)
-
-        return {
-            'count': len(safe_readings),
-            'readings': safe_readings,
-        }
-
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
 
 
-@app.get('/machines')
-async def list_machines(token: dict = Depends(verify_token)):
-    """Return a list of distinct machine IDs in the readings collection.
+@app.get('/timeline', response_model=TimelineResponse)
+async def timeline(
+    limit: int = 50,
+    forecast_minutes: int = 100,
+    token: dict = Depends(verify_token)
+):
+    """Return latest readings followed by forecasted points."""
+    ensure_db_connected()
+    validate_timeline_params(limit, forecast_minutes)
+    try:
+        readings = await mongodb_client.get_last_readings(limit=limit)
+        if not readings:
+            raise HTTPException(status_code=404, detail="No historical data available")
 
-    Supports both legacy `machine_id` and new `Product ID` column naming.
-    """
+        logger.info("/timeline fetched %s historical readings", len(readings))
+        safe_readings = serialize_readings(readings)
+        logger.info("/timeline first reading keys: %s", list(safe_readings[0].keys()))
+
+        df_historical = prepare_forecast_data(readings)
+        forecast_data = generate_forecast(
+            historical_data=df_historical,
+            forecast_minutes=forecast_minutes
+        )
+
+        logger.info("/timeline generated forecast points: %s", len(forecast_data))
+        if forecast_data:
+            logger.info("/timeline first forecast sample: %s", forecast_data[0])
+
+        return TimelineResponse(
+            last_readings=safe_readings,
+            forecast_minutes=forecast_minutes,
+            forecast_data=forecast_data,
+            created_at=datetime.now(timezone.utc).isoformat()
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating timeline: {e}")
+
+
+def ensure_db_connected():
     if not mongodb_client:
         raise HTTPException(
             status_code=500,
             detail="Database not connected. Please configure MONGODB_URI in .env"
         )
 
-    try:
-        return {}
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
+def validate_timeline_params(limit: int, forecast_minutes: int):
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if forecast_minutes < 1 or forecast_minutes > 1440:
+        raise HTTPException(status_code=400, detail="forecast_minutes must be between 1 and 1440")
+
+
+def serialize_readings(readings: List[Dict]) -> List[Dict]:
+    safe_readings = []
+    for doc in readings:
+        safe = {}
+        for key, value in doc.items():
+            if key == '_id':
+                safe['_id'] = str(value)
+            elif hasattr(value, 'isoformat'):
+                safe[key] = value.isoformat()
+            else:
+                safe[key] = value
+        safe_readings.append(safe)
+    return safe_readings
 

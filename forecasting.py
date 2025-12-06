@@ -1,3 +1,4 @@
+import logging
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
@@ -5,6 +6,26 @@ from skforecast.recursive import ForecasterRecursive
 from sklearn.svm import SVR
 from typing import Dict, List
 from datetime import datetime, timedelta
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+AIR_TEMPERATURE = "Air temperature"
+PROCESS_TEMPERATURE = "Process temperature"
+ROTATIONAL_SPEED = "Rotational speed"
+TORQUE = "Torque"
+TOOL_WEAR = "Tool wear"
+
+SENSOR_COLUMN_MAP = {
+    'Air temperature [K]': AIR_TEMPERATURE,
+    'Process temperature [K]': PROCESS_TEMPERATURE,
+    'Rotational speed [rpm]': ROTATIONAL_SPEED,
+    'Torque [Nm]': TORQUE,
+    'Tool wear [min]': TOOL_WEAR,
+}
+
+REQUIRED_COLS = [AIR_TEMPERATURE, PROCESS_TEMPERATURE, ROTATIONAL_SPEED, TORQUE, TOOL_WEAR]
+DROPPABLE_COLS = ['UDI', 'Product ID', 'Type', 'Target', 'Failure Type', '_id']
 
 
 def prepare_forecast_data(readings: List[Dict]) -> pd.DataFrame:
@@ -14,8 +35,7 @@ def prepare_forecast_data(readings: List[Dict]) -> pd.DataFrame:
     and forecaster_input.csv schema (Air temperature [K], Process temperature [K], etc.)
     """
     df = pd.DataFrame(readings)
-
-    
+    logger.info("Loaded historical readings: rows=%s, cols=%s", len(df), list(df.columns))
     return df
 
 def generate_forecast(
@@ -37,34 +57,51 @@ def generate_forecast(
 
     steps = int(forecast_minutes)
 
-    df = historical_data
+    df = historical_data.copy()
 
-    # Drop unnecessary columns
-    df = df.drop(['UDI'], axis=1)
-    df = df.drop(['Product ID'], axis=1)
-    df = df.drop(['Type'], axis=1)
-    df = df.drop(['Target'], axis=1)
-    df = df.drop(['Failure Type'], axis=1)
+    if df.empty:
+        logger.error("Historical data is empty; cannot generate forecast")
+        raise ValueError("No historical data available for forecasting")
 
-    df = df.rename(columns={'Air temperature [K]': 'Air temperature',
-                                'Process temperature [K]': 'Process temperature',
-                                'Rotational speed [rpm]': 'Rotational speed',
-                                'Torque [Nm]': 'Torque',
-                                'Tool wear [min]': 'Tool wear',
-                                })
+    # Drop unnecessary columns if they exist
+    df = df.drop(columns=[c for c in DROPPABLE_COLS if c in df.columns], errors='ignore')
 
-    df = df.set_index("Tool wear")
-    full_index = pd.Index(range(df.index.max() + 1), name="Tool wear")
+    df = df.rename(columns=SENSOR_COLUMN_MAP)
+
+    # Keep only the sensor columns we actually forecast; this drops string/object cols that break aggregations
+    df = df[[c for c in REQUIRED_COLS if c in df.columns]]
+
+    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    if missing:
+        logger.error("Missing required columns: %s", missing)
+        raise ValueError(f"Missing required columns: {missing}")
+
+    # Ensure numeric types for all required columns
+    for col in REQUIRED_COLS:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df = df.dropna(subset=[TOOL_WEAR])
+    logger.info("Cleaned frame columns=%s", list(df.columns))
+
+    duplicate_count = df[TOOL_WEAR].duplicated().sum()
+    if duplicate_count:
+        logger.warning("Duplicate Tool wear values detected: %s. Aggregating by mean to continue.", duplicate_count)
+        df = df.groupby(TOOL_WEAR, as_index=False).mean()
+
+    df = df.sort_values(TOOL_WEAR)
+    df = df.set_index(TOOL_WEAR)
+    full_index = pd.Index(range(int(df.index.max()) + 1), name=TOOL_WEAR)
     df = df.reindex(full_index)
+    logger.info("Prepared forecasting frame: rows=%s, cols=%s", df.shape[0], df.shape[1])
 
-    _, lower_bound, upper_bound = detect_outliers_iqr(df, "Air temperature")
-    df.loc[df["Air temperature"] < lower_bound, 'Air temperature'] = lower_bound
-    df.loc[df["Air temperature"] > upper_bound, 'Air temperature'] = upper_bound
+    _, lower_bound, upper_bound = detect_outliers_iqr(df, AIR_TEMPERATURE)
+    df.loc[df[AIR_TEMPERATURE] < lower_bound, AIR_TEMPERATURE] = lower_bound
+    df.loc[df[AIR_TEMPERATURE] > upper_bound, AIR_TEMPERATURE] = upper_bound
 
-    df["Air temperature"] = df["Air temperature"].interpolate()
+    df[AIR_TEMPERATURE] = df[AIR_TEMPERATURE].interpolate()
     df = df.reset_index(drop=True)
     x = pd.DataFrame(list(df.index), columns=["Index"])
-    y = df["Air temperature"]
+    y = df[AIR_TEMPERATURE]
 
     svr = SVR(kernel='rbf')
     svr.fit(x, y)
@@ -76,22 +113,22 @@ def generate_forecast(
                     regressor = LinearRegression(),
                     lags      = 1
                 )
-    forecaster.fit(y=pd.Series(train, name="Air temperature"))
+    forecaster.fit(y=pd.Series(train, name=AIR_TEMPERATURE))
 
     predictions = forecaster.predict(steps=steps)
     predictions[predictions < 294] = 294
     predictions[predictions > 306] = 306
-    predictions = predictions.rename('Air temperature')
+    predictions = predictions.rename(AIR_TEMPERATURE)
     output_df = pd.DataFrame(predictions)
 
-    _, lower_bound, upper_bound = detect_outliers_iqr(df, "Process temperature")
-    df.loc[df["Process temperature"] < lower_bound, 'Process temperature'] = lower_bound
-    df.loc[df["Process temperature"] > upper_bound, 'Process temperature'] = upper_bound
+    _, lower_bound, upper_bound = detect_outliers_iqr(df, PROCESS_TEMPERATURE)
+    df.loc[df[PROCESS_TEMPERATURE] < lower_bound, PROCESS_TEMPERATURE] = lower_bound
+    df.loc[df[PROCESS_TEMPERATURE] > upper_bound, PROCESS_TEMPERATURE] = upper_bound
 
-    process_temperature_ori = df["Process temperature"] - df["Air temperature"] - 10
-    df["Process temperature"] = process_temperature_ori.interpolate()
+    process_temperature_ori = df[PROCESS_TEMPERATURE] - df[AIR_TEMPERATURE] - 10
+    df[PROCESS_TEMPERATURE] = process_temperature_ori.interpolate()
     x = pd.DataFrame(list(df.index), columns=["Index"])
-    y = df["Process temperature"]
+    y = df[PROCESS_TEMPERATURE]
 
     svr = SVR(kernel='rbf')
     svr.fit(x, y)
@@ -102,21 +139,21 @@ def generate_forecast(
                     regressor = LinearRegression(),
                     lags      = 1
                 )
-    forecaster.fit(y=pd.Series(train, name="Process temperature"))
+    forecaster.fit(y=pd.Series(train, name=PROCESS_TEMPERATURE))
 
     predictions = forecaster.predict(steps=steps)
     predictions[predictions < -3] = -3
     predictions[predictions > 3] = 3
     predictions = predictions.values + output_df["Air temperature"].values + 10
-    predictions = pd.Series(predictions, name='Process temperature', index=output_df.index)
+    predictions = pd.Series(predictions, name=PROCESS_TEMPERATURE, index=output_df.index)
     output_df = pd.concat([output_df, predictions], axis=1)
 
-    _, lower_bound, upper_bound = detect_outliers_iqr(df, "Rotational speed")
-    df.loc[df["Rotational speed"] < lower_bound, 'Rotational speed'] = lower_bound
-    df.loc[df["Rotational speed"] > upper_bound, 'Rotational speed'] = upper_bound
+    _, lower_bound, upper_bound = detect_outliers_iqr(df, ROTATIONAL_SPEED)
+    df.loc[df[ROTATIONAL_SPEED] < lower_bound, ROTATIONAL_SPEED] = lower_bound
+    df.loc[df[ROTATIONAL_SPEED] > upper_bound, ROTATIONAL_SPEED] = upper_bound
 
-    df["Rotational speed"] = df["Rotational speed"].interpolate()
-    y = df["Rotational speed"]
+    df[ROTATIONAL_SPEED] = df[ROTATIONAL_SPEED].interpolate()
+    y = df[ROTATIONAL_SPEED]
     y_pred = np.mean(y) * np.ones_like(y)
 
     train = y_pred
@@ -124,18 +161,18 @@ def generate_forecast(
                     regressor = LinearRegression(),
                     lags      = 1
                 )
-    forecaster.fit(y=pd.Series(train, name="Rotational speed"))
+    forecaster.fit(y=pd.Series(train, name=ROTATIONAL_SPEED))
 
     predictions = forecaster.predict(steps=steps)
-    predictions = predictions.rename('Rotational speed')
+    predictions = predictions.rename(ROTATIONAL_SPEED)
     output_df = pd.concat([output_df, predictions], axis=1)
 
-    _, lower_bound, upper_bound = detect_outliers_iqr(df, "Torque")
-    df.loc[df["Torque"] < lower_bound, 'Torque'] = lower_bound
-    df.loc[df["Torque"] > upper_bound, 'Torque'] = upper_bound
+    _, lower_bound, upper_bound = detect_outliers_iqr(df, TORQUE)
+    df.loc[df[TORQUE] < lower_bound, TORQUE] = lower_bound
+    df.loc[df[TORQUE] > upper_bound, TORQUE] = upper_bound
 
-    df["Torque"] = df["Torque"].interpolate()
-    y = df["Torque"]
+    df[TORQUE] = df[TORQUE].interpolate()
+    y = df[TORQUE]
     y_pred = 40 * np.ones_like(y)
 
     train = y_pred
@@ -143,26 +180,26 @@ def generate_forecast(
                     regressor = LinearRegression(),
                     lags      = 1
                 )
-    forecaster.fit(y=pd.Series(train, name="Torque"))
+    forecaster.fit(y=pd.Series(train, name=TORQUE))
 
     predictions = forecaster.predict(steps=steps)
     predictions[predictions < 0] = 0
-    predictions = predictions.rename('Torque')
+    predictions = predictions.rename(TORQUE)
     output_df = pd.concat([output_df, predictions], axis=1)
 
     indices = list(output_df.index)
-    indices = pd.Series(indices, name='Tool wear', index=output_df.index)
+    indices = pd.Series(indices, name=TOOL_WEAR, index=output_df.index)
     output_df = pd.concat([output_df, indices], axis=1)
     output_df = output_df.reset_index(drop=True)
 
     forecast_list = []
     for i in range(steps):
         forecast_dict = {
-            "air_temperature": float(output_df['Air temperature'][i]),
-            "process_temperature": float(output_df['Process temperature'][i]),
-            "rotational_speed": float(output_df['Rotational speed'][i]),
-            "torque": float(output_df['Torque'][i]),
-            "tool_wear": float(output_df['Tool wear'][i]),
+            "air_temperature": float(output_df[AIR_TEMPERATURE][i]),
+            "process_temperature": float(output_df[PROCESS_TEMPERATURE][i]),
+            "rotational_speed": float(output_df[ROTATIONAL_SPEED][i]),
+            "torque": float(output_df[TORQUE][i]),
+            "tool_wear": float(output_df[TOOL_WEAR][i]),
         }
 
         forecast_list.append(forecast_dict)
