@@ -1,17 +1,26 @@
-## Quick Start
+# Machine Monitoring Backend API
+
+Backend untuk sistem monitoring mesin prediktif menggunakan FastAPI, XGBoost classifier, dan time-series forecasting.
+
+## Setup
 
 ### 1. Install Dependencies
-
 ```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 2. Configure Environment
-
-Create a `.env` file in the root directory based on `.env.example`
+Buat file `.env` dengan konfigurasi:
+```
+MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/database
+MONGODB_DATABASE=machine_monitoring_db
+MONGODB_COLLECTION=machine_monitoring
+API_USERNAME=admin
+API_PASSWORD=your_password
+ACCESS_TOKEN_KEY=your_secret_key
+```
 
 ### 3. Run Server
-
 ```bash
 uvicorn app:app --reload --port 8000
 ```
@@ -20,36 +29,16 @@ uvicorn app:app --reload --port 8000
 
 ## API Routes
 
-### Base URL
-```
-http://localhost:8000
-```
+### Authentication
 
-### 1. Health Check
+#### POST `/login`
+Login dan dapatkan JWT token.
 
-**GET** `/`
-
-Check if the API and model are running properly.
-
-**Response:**
+**Request:**
 ```json
 {
-  "status": "ok",
-  "model_loaded": true
-}
-```
-
-### 2. Login
-
-**POST** `/login`
-
-Authenticate and get a JWT access token.
-
-**Request Body:**
-```json
-{
-  "username": "your_username",
-  "password": "your_password"
+  "username": "admin",
+  "password": "password"
 }
 ```
 
@@ -58,26 +47,85 @@ Authenticate and get a JWT access token.
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "token_type": "bearer",
-  "expires_in": 1800
+  "expires_in": 86400
 }
 ```
 
-**Status Codes:**
-- `200 OK` - Login successful
-- `401 Unauthorized` - Invalid credentials
+---
 
-### 3. Predict Machine Failure
+### Machine Data
 
-**POST** `/predict`
+#### GET `/readings`
+Ambil daftar mesin atau sensor readings mesin spesifik.
 
-Predict machine failure status based on sensor data.
+**Query Parameters:**
+- `machine_id` (optional): ID mesin untuk filter
+
+**Response:**
+```json
+{
+  "machines": ["M1", "M2", "M3"],
+  "count": 3
+}
+```
+
+atau jika dengan `machine_id`:
+```json
+{
+  "readings": [
+    {
+      "Machine ID": "M1",
+      "Air temperature [K]": 298.1,
+      "Process temperature [K]": 308.6,
+      "Rotational speed [rpm]": 1551,
+      "Torque [Nm]": 42.8,
+      "Tool wear [min]": 0,
+      "Type": "M"
+    }
+  ],
+  "count": 100
+}
+```
+
+#### GET `/machine-status`
+Ambil status dan klasifikasi terbaru dari semua mesin.
+
+**Response:**
+```json
+{
+  "count": 3,
+  "machines": [
+    {
+      "machine_id": "M1",
+      "prediction_numeric": 0,
+      "prediction_label": "No Failure",
+      "probabilities": [0.95, 0.02, 0.01, 0.01, 0.01, 0.0],
+      "timestamp": "2025-12-06T10:30:00Z"
+    },
+    {
+      "machine_id": "M2",
+      "prediction_numeric": 4,
+      "prediction_label": "Tool Wear Failure",
+      "probabilities": [0.1, 0.05, 0.03, 0.02, 0.8, 0.0],
+      "timestamp": "2025-12-06T10:29:45Z"
+    }
+  ]
+}
+```
+
+---
+
+### Predictions
+
+#### POST `/predict`
+Prediksi status kegagalan mesin dari sensor readings tunggal.
 
 **Headers:**
 ```
-Authorization: Bearer <your_access_token>
+Authorization: Bearer <access_token>
 ```
 
-**Request Body:**
+**Request:**
 ```json
 {
   "Air_temperature": 298.1,
@@ -89,170 +137,128 @@ Authorization: Bearer <your_access_token>
 }
 ```
 
-**Parameters:**
-- `Air_temperature` (float): Ambient air temperature in Kelvin
-- `Process_temperature` (float): Process temperature in Kelvin
-- `Rotational_speed` (float): Rotational speed in RPM
-- `Torque` (float): Torque in Nm
-- `Tool_wear` (float): Tool wear in minutes
-- `Type` (string): Machine type - "L" (Low), "M" (Medium), or "H" (High)
-
 **Response:**
 ```json
 {
-  "prediction": 0,
-  "label": "No Failure",
-  "probabilities": {
-    "No Failure": 0.95,
-    "Failure": 0.05
-  }
+  "prediction_numeric": 0,
+  "prediction_label": "No Failure",
+  "probabilities": [0.95, 0.02, 0.01, 0.01, 0.01, 0.0]
 }
 ```
 
-**Status Codes:**
-- `200 OK` - Prediction successful
-- `400 Bad Request` - Invalid input data
-- `401 Unauthorized` - Missing or invalid token
-- `500 Internal Server Error` - Model error
+**Failure Types:**
+- `0` - No Failure
+- `1` - Heat Dissipation Failure
+- `2` - Power Failure
+- `3` - Overstrain Failure
+- `4` - Tool Wear Failure
+- `5` - Random Failures
 
-### 4. Generate Forecast
+---
 
-**POST** `/forecast`
+### Forecasting
 
-Generate forecast for machine sensor data. This service produces minute-level forecasts.
-Each forecast step is one minute. The API accepts `forecast_minutes`
-to request N minutes ahead (default fixed to 300 minutes).
+#### POST `/forecast`
+Generate forecast untuk 5 sensor dalam N menit ke depan.
 
 **Headers:**
 ```
-Authorization: Bearer <your_access_token>
+Authorization: Bearer <access_token>
 ```
 
-**Request Body (minute example):**
+**Request:**
 ```json
 {
-  "machine_id": "machine_001",
   "forecast_minutes": 300
 }
 ```
 
-Notes on parameters:
-- `machine_id` (string): Unique identifier for the machine.
-- `forecast_minutes` (integer): Number of minutes to forecast. Default is 300. Choose a reasonable upper bound (for example 1-1440).
-
-Behavior and units:
-- Each forecast step == 1 minute. Timestamps in the response are incremented by minutes from the last historical timestamp.
-
-**Response (example - minute mode):**
+**Response:**
 ```json
 {
-  "machine_id": "machine_001",
   "forecast_minutes": 300,
   "forecast_data": [
     {
-      "timestamp": "2025-09-02T00:00:00Z",
-      "day_ahead": 1,
-      "Air_temperature": 298.309,
-      "Process_temperature": 308.926,
-      "Rotational_speed": 1500.0,
-      "Torque": 40.00,
-      "Tool_wear": 28.80
+      "air_temperature": 299.2,
+      "process_temperature": 309.1,
+      "rotational_speed": 1550,
+      "torque": 42.5,
+      "tool_wear": 1
+    },
+    {
+      "air_temperature": 299.5,
+      "process_temperature": 309.4,
+      "rotational_speed": 1552,
+      "torque": 43.0,
+      "tool_wear": 2
     }
   ],
-  "created_at": "2025-09-02T00:00:00Z"
+  "created_at": "2025-12-06T10:30:00Z"
 }
 ```
 
-**Status Codes:**
-- `200 OK` - Forecast generated successfully
-- `400 Bad Request` - Invalid parameters (e.g., missing `machine_id`, both `forecast_days` and `forecast_minutes` missing, or values out of allowed range) or insufficient data
-- `401 Unauthorized` - Missing or invalid token
-- `404 Not Found` - No historical data for `machine_id`
-- `500 Internal Server Error` - Database not connected or forecast error
+#### GET `/timeline`
+Ambil 50 sensor readings terakhir + forecast untuk N menit ke depan.
 
-### 5. Displaying Historical Data (MongoDB)
+**Query Parameters:**
+- `limit` (int, default: 50): Jumlah readings terakhir
+- `forecast_minutes` (int, default: 100): Menit forecast ke depan
 
-You can fetch historical sensor readings stored in MongoDB via the backend. There are two useful endpoints:
-
-- **Authenticated**: `GET /readings?limit=<n>` — requires a valid JWT in the `Authorization: Bearer <token>` header and returns recent readings for the machine.
-
-Quick curl example (admin endpoint):
-```bash
-curl -s "http://localhost:8000/readings?limit=500" \
--H "Authorization: Bearer <TOKEN>"
-```
-
-**Response (example - limit=1):**
+**Response:**
 ```json
 {
-  "machine_id": "machine_01",
-  "count": 1,
-  "readings": [
+  "last_readings": [
     {
-      "timestamp": "2025-09-01T23:59:00",
-      "machine_type": "M",
-      "process_temperature": 309.1,
-      "machine_id": "machine_01",
-      "torque": 40.4,
-      "air_temperature": 298.5,
-      "tool_wear": 28.8,
-      "rotational_speed": 1500,
-      "_id": "6909bd8c79033ed1e570f233"
+      "machine_id": "M1",
+      "timestamp": "2025-12-06T10:15:00Z",
+      "air_temperature": 298.0,
+      "process_temperature": 308.5,
+      "rotational_speed": 1550,
+      "torque": 42.0,
+      "tool_wear": 10
+    },
+    {
+      "machine_id": "M1",
+      "timestamp": "2025-12-06T10:16:00Z",
+      "air_temperature": 298.2,
+      "process_temperature": 308.7,
+      "rotational_speed": 1551,
+      "torque": 42.3,
+      "tool_wear": 11
     }
-  ]
+  ],
+  "forecast_minutes": 100,
+  "forecast_data": [
+    {
+      "air_temperature": 298.5,
+      "process_temperature": 309.0,
+      "rotational_speed": 1552,
+      "torque": 42.5,
+      "tool_wear": 12
+    }
+  ],
+  "created_at": "2025-12-06T10:30:00Z"
 }
-```
-
-### 6. List Machines
-
-**GET** `/machines`
-
-Return a list of distinct `machine_id` values present in the readings collection. This endpoint is authenticated and intended for frontend clients to discover available machines.
-
-**Headers:**
-```
-Authorization: Bearer <your_access_token>
-```
-
-**Response (example):**
-```json
-{
-  "count": 2,
-  "machines": [
-    { "machine_id": "machine_01" },
-    { "machine_id": "machine_02" }
-  ]
-}
-```
-
-Quick curl example (authenticated):
-```bash
-curl -H "Authorization: Bearer <your_access_token>" "http://127.0.0.1:8000/machines"
 ```
 
 ---
 
-## Authentication
+### Health Check
 
-All endpoints except `/` and `/login` require authentication using JWT Bearer tokens.
+#### GET `/`
+Status API dan model.
 
-### How to authenticate:
+**Response:**
+```json
+{
+  "status": "ok",
+  "model_loaded": true
+}
+```
 
-1. **Login** to get an access token:
-   ```bash
-   curl -X POST http://localhost:8000/login \
-     -H "Content-Type: application/json" \
-     -d '{"username": "your_username", "password": "your_password"}'
-   ```
+---
 
-2. **Use the token** in subsequent requests:
-   ```bash
-   curl -X POST http://localhost:8000/predict \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer <your_access_token>" \
-     -d '{...}'
-   ```
+## Notes
 
-### Token Expiration
-
-Access tokens expire after 30 minutes (1800 seconds) by default. You'll need to login again to get a new token.
+- Semua route kecuali `GET /` dan `POST /login` memerlukan JWT token di header `Authorization: Bearer <token>`
+- Token expires setelah 24 jam
