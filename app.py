@@ -1,94 +1,135 @@
-from fastapi import FastAPI, HTTPException, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 import os
+import aiofiles
+from fastapi import FastAPI, HTTPException, Depends, status, Request, File, UploadFile
+from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import jwt
 from passlib.context import CryptContext
 from dotenv import load_dotenv
-from contextlib import asynccontextmanager
 from typing import Optional, List, Dict
+from services.gemini_service import explain_with_gemini
+import pandas as pd
+import io
+import asyncio
+import json
+from typing import List
 
-# Import our custom modules
-from mongodb_client import MongoDBClient
-from forecasting import generate_forecast, prepare_forecast_data
-from classification import initialize_classifier, get_classifier
+from services.mongodb_service import MongoDBClient
+from services.forecasting_service import generate_forecast, prepare_forecast_data
+from services.machine_failure_service import initialize_classifier, get_classifier, normalize_for_classifier
+from services.pos_service import load_pos_resources, predict_pos
+from services.classifier_service import load_classifier_resources, predict_prompt_type
+from services.injection_service import load_injection_resources, predict_injection_status
+from services.gemini_service import explain_with_gemini, configure_gemini
 
-# Load environment variables
 load_dotenv()
 
-# MongoDB configuration
+LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), 'logs', 'user_llm_conversation.txt')
+os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
+
 MONGODB_URI = os.getenv('MONGODB_URI')
-# Default database and collection updated to match the new deployment
 MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'machine_monitoring_db')
 MONGODB_COLLECTION = os.getenv('MONGODB_COLLECTION', 'machine_monitoring')
 
-# Global MongoDB client
-mongodb_client: Optional[MongoDBClient] = None
+# JWT Config
+ACCESS_TOKEN_KEY = os.getenv('ACCESS_TOKEN_KEY', 'secret_key')
+ACCESS_TOKEN_AGE = int(os.getenv('ACCESS_TOKEN_AGE', 1800))
+ALGORITHM = "HS256"
+API_USERNAME = os.getenv('API_USERNAME')
+API_PASSWORD = os.getenv('API_PASSWORD')
 
+REQUIRED_COLUMNS = {
+    "UID", 
+    "Product ID", 
+    "Type", 
+    "Air temperature [K]", 
+    "Process temperature [K]", 
+    "Rotational speed [rpm]", 
+    "Torque [Nm]", 
+    "Tool wear [min]", 
+    "Machine failure",
+    "TWF", "HDF", "PWF", "OSF", "RNF" 
+}
+
+COLUMN_MAPPING = {
+    "productID": "Product ID",
+    "air temperature [K]": "Air temperature [K]",
+    "process temperature [K]": "Process temperature [K]",
+    "rotational speed [rpm]": "Rotational speed [rpm]",
+    "torque [Nm]": "Torque [Nm]",
+    "tool wear [min]": "Tool wear [min]",
+    "machine failure": "Machine failure"
+}
+
+mongodb_client: Optional[MongoDBClient] = None
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+class TimelineResponse(BaseModel):
+    last_readings: List[Dict]
+    forecast_minutes: int
+    forecast_data: List[Dict]
+    created_at: str
+
+def serialize_readings(readings: List[Dict]) -> List[Dict]:
+    """Helper untuk bikin data MongoDB JSON-serializable"""
+    safe_readings = []
+    for doc in readings:
+        safe = {}
+        for key, value in doc.items():
+            if key == '_id':
+                safe['_id'] = str(value)
+            elif hasattr(value, 'isoformat'):
+                safe[key] = value.isoformat()
+            else:
+                safe[key] = value
+        safe_readings.append(safe)
+    return safe_readings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage MongoDB connection and model loading lifecycle"""
+    """Manage MongoDB connection and ML models lifecycle"""
     global mongodb_client
     
-    # Startup
-    # Initialize MongoDB
-    if MONGODB_URI:
-        # Pass database and collection name into the client so it can
-        # connect to the correct DB / collection layout.
-        mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE, MONGODB_COLLECTION)
-        print(f"✅ Connected to MongoDB: {MONGODB_DATABASE} (collection={MONGODB_COLLECTION})")
-    else:
-        print("⚠️ MONGODB_URI not set - running without database")
+    configure_gemini()
     
-    # Initialize Classifier
+    if MONGODB_URI:
+        mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE, MONGODB_COLLECTION)
+        print(f"Connected to MongoDB: {MONGODB_DATABASE}")
+    else:
+        print("MONGODB_URI not set - running without database")
+    
+    MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'classifier.h5')
     initialize_classifier(MODEL_PATH)
     
+    BASE_MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
+    
+    load_pos_resources(BASE_MODELS_DIR)
+    
+    load_classifier_resources(os.path.join(BASE_MODELS_DIR, 'prompt_classifier'))
+    
+    load_injection_resources(os.path.join(BASE_MODELS_DIR, 'prompt_injection'))
+
     yield
     
-    # Shutdown
     if mongodb_client:
         await mongodb_client.close()
         print("🔌 MongoDB connection closed")
 
 
-app = FastAPI(title='Classifier Test API', lifespan=lifespan)
-
-# JWT Configuration
-ACCESS_TOKEN_KEY = os.getenv('ACCESS_TOKEN_KEY')
-REFRESH_TOKEN_KEY = os.getenv('REFRESH_TOKEN_KEY')
-ACCESS_TOKEN_AGE = int(os.getenv('ACCESS_TOKEN_AGE', 1800))
-ALGORITHM = "HS256"
-
-# User credentials from .env
-API_USERNAME = os.getenv('API_USERNAME')
-API_PASSWORD = os.getenv('API_PASSWORD')
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Security
-security = HTTPBearer()
-
-# Allow local origins used by the frontend during development
-origins = [
-    "http://localhost",
-    "http://127.0.0.1",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+app = FastAPI(title='Smart Machine Backend', lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'classifier.h5')
 
 class InputSample(BaseModel):
     Air_temperature: float
@@ -109,7 +150,6 @@ class TokenResponse(BaseModel):
 
 class ForecastRequest(BaseModel):
     machine_id: str
-    # Now using minute-based forecasting (default 300 minutes)
     forecast_minutes: int = 300
 
 class ForecastResponse(BaseModel):
@@ -118,62 +158,47 @@ class ForecastResponse(BaseModel):
     forecast_data: List[Dict]
     created_at: str
 
-# Authentication functions
+class TextRequest(BaseModel):
+    text: str
+
+class TextPayload(BaseModel):
+    text: str
+
 def create_access_token(data: dict) -> str:
-    """Create a JWT access token"""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_AGE)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, ACCESS_TOKEN_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, ACCESS_TOKEN_KEY, algorithm=ALGORITHM)
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
-    """Verify JWT token from Authorization header"""
     token = credentials.credentials
     try:
         payload = jwt.decode(token, ACCESS_TOKEN_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        if payload.get("sub") is None:
+            raise ValueError("No subject in token")
         return payload
-    except jwt.ExpiredSignatureError:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    except jwt.JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
 def authenticate_user(username: str, password: str) -> bool:
-    """Authenticate user with username and password"""
     if username != API_USERNAME:
         return False
-    # For production, you should hash the password in .env
-    # For now, we'll do simple comparison
     return password == API_PASSWORD
-
 
 @app.get('/')
 def root():
     classifier = get_classifier()
     return {
         'status': 'ok',
-        'model_loaded': classifier is not None and classifier.is_loaded()
+        'machine_model_loaded': classifier is not None and classifier.is_loaded()
     }
-
 
 @app.post('/login', response_model=TokenResponse)
 def login(credentials: LoginRequest):
-    """Login endpoint to get JWT token"""
     if not authenticate_user(credentials.username, credentials.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -181,34 +206,75 @@ def login(credentials: LoginRequest):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token = create_access_token(
-        data={"sub": credentials.username}
-    )
-    
+    access_token = create_access_token(data={"sub": credentials.username})
     return {
         "access_token": access_token,
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_AGE
     }
 
+@app.post('/predict/pos')
+def get_pos_tags(request: TextRequest, token: dict = Depends(verify_token)):
+    """Extract entities (POS Tags) from text."""
+    try:
+        result = predict_pos(request.text)
+        return {
+            "status": "success",
+            "original_text": request.text,
+            "entities": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/predict/classifier')
+async def classify_prompt(payload: TextPayload, token: dict = Depends(verify_token)):
+    """Classify user intent and log conversation."""
+    try:
+        result = predict_prompt_type(payload.text)
+        
+        try:
+            label_result = result.get('label', 'unknown') 
+            log_entry = f"{payload.text}|{label_result}\n"
+            async with aiofiles.open(LOG_FILE_PATH, mode='a', encoding='utf-8') as f:
+                await f.write(log_entry)
+        except Exception as log_error:
+            print(f"Log Error: {log_error}")
+
+        return {
+            "original_text": payload.text,
+            "classification": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/predict/injection")
+async def predict_injection(request: Request):
+    """Detect prompt injection attacks."""
+    try:
+        data = await request.json()
+        text = data.get("prompt", "")
+        
+        result = predict_injection_status(text)
+
+        return {
+            "prompt": text,
+            "is_malicious": result['is_malicious'],
+            "classification": {
+                "label": result['label'],
+                "confidence": result['confidence']
+            }
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=503, detail=str(ve))
+    except Exception as e:
+        print(f"Injection Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.post('/predict')
-def predict(sample: InputSample, token: dict = Depends(verify_token)):
-    """
-    Predict machine failure status from sensor data
-    
-    Args:
-        sample: InputSample with sensor readings
-        token: JWT token (authenticated user)
-    
-    Returns:
-        Prediction result with label and probabilities
-    """
+async def predict_machine_failure(sample: InputSample, token: dict = Depends(verify_token)): # Ubah jadi ASYNC
     classifier = get_classifier()
-    
     if not classifier or not classifier.is_loaded():
-        raise HTTPException(status_code=500, detail='Model not loaded on server')
-    
+        raise HTTPException(status_code=500, detail='Model not loaded')
     try:
         result = classifier.predict(
             air_temperature=sample.Air_temperature,
@@ -218,174 +284,302 @@ def predict(sample: InputSample, token: dict = Depends(verify_token)):
             tool_wear=sample.Tool_wear,
             machine_type=sample.Type
         )
+
+        is_failure = result['prediction_label'] != 'No Failure'
+        
+        if is_failure:
+            alert_payload = {
+                "type": "CRITICAL_ALERT",
+                "title": f"Terdeteksi Kerusakan Mesin!",
+                "message": f"Mesin Tipe {sample.Type} terdeteksi mengalami {result['prediction_label']}",
+                "data": result, # Sertakan data teknis
+                "timestamp": datetime.now().isoformat()
+            }
+            await notification_manager.broadcast(alert_payload)
+
         return result
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Prediction error: {str(e)}')
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post('/forecast', response_model=ForecastResponse)
-async def forecast(request: ForecastRequest, token: dict = Depends(verify_token)):
-    """
-    Generate forecast for machine sensor data for N days ahead
-    
-    Args:
-        request: ForecastRequest with machine_id and forecast_days
-        token: JWT token (authenticated user)
-    
-    Returns:
-        ForecastResponse with forecast data
-    """
+async def forecast_machine(request: ForecastRequest, token: dict = Depends(verify_token)):
     if not mongodb_client:
-        raise HTTPException(
-            status_code=500,
-            detail="Database not connected. Please configure MONGODB_URI in .env"
-        )
-    
-    machine_id = request.machine_id
-    forecast_minutes = request.forecast_minutes
-
-    # Validate forecast_minutes (limit to 1 day of minutes by default)
-    if forecast_minutes < 1 or forecast_minutes > 1440:
-        raise HTTPException(
-            status_code=400,
-            detail="forecast_minutes must be between 1 and 1440"
-        )
+        raise HTTPException(status_code=500, detail="Database not connected")
     
     try:
-        # Get historical data (last 30 days minimum for good predictions)
-        historical_readings = await mongodb_client.get_readings_range(
-            machine_id=machine_id,
-            days=30
-        )
+        historical_readings = await mongodb_client.get_readings_range(request.machine_id, days=30)
         
         if not historical_readings:
-            # Fallback: if there are no readings in the last N days (e.g. the
-            # available data is historic), fetch the last available readings
-            # regardless of timestamp so forecasting can still run.
-            historical_readings = await mongodb_client.get_last_readings(
-                machine_id=machine_id,
-                limit=1440
-            )
+             historical_readings = await mongodb_client.get_last_readings(limit=1440)
+        
+        if not historical_readings or len(historical_readings) < 7:
+            raise HTTPException(status_code=400, detail="Insufficient data for forecasting (need min 7 points)")
 
-        if not historical_readings:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No historical data found for machine_id: {machine_id}"
-            )
-        
-        if len(historical_readings) < 7:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient data for forecasting. Found {len(historical_readings)} readings, need at least 7"
-            )
-        
-        # Prepare data for forecasting
         df_historical = prepare_forecast_data(historical_readings)
         
-        # Get machine type from latest reading
-        machine_type = historical_readings[-1].get('machine_type', 'M')
+        last_reading = historical_readings[-1]
+        machine_type = last_reading.get('Type', 'M') 
         
-        # Generate forecast
         forecast_data = generate_forecast(
             historical_data=df_historical,
-            machine_id=machine_id,
-            machine_type=machine_type,
+            forecast_minutes=request.forecast_minutes,
+            machine_id=request.machine_id,
+            machine_type=machine_type
+        )
+        
+        await mongodb_client.save_forecast(request.machine_id, request.forecast_minutes, forecast_data)
+        
+        return ForecastResponse(
+            machine_id=request.machine_id,
+            forecast_minutes=request.forecast_minutes,
+            forecast_data=forecast_data,
+            created_at=datetime.now(timezone.utc).isoformat()
+        )
+    except Exception as e:
+        print(f"Forecast Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Forecast error: {str(e)}")
+
+@app.get('/readings')
+async def get_readings(machine_id: str, limit: int = 100, token: dict = Depends(verify_token)):
+    if not mongodb_client:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    try:
+        cursor = mongodb_client.sensor_readings.find({'machine_id': machine_id}, sort=[('timestamp', -1)]).limit(limit)
+        readings = await cursor.to_list(length=limit)
+        for doc in readings:
+            doc['_id'] = str(doc.get('_id'))
+            if 'timestamp' in doc: doc['timestamp'] = doc['timestamp'].isoformat()
+        
+        return {'machine_id': machine_id, 'count': len(readings), 'readings': readings}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/machines')
+async def get_machines_list(token: dict = Depends(verify_token)):
+    if not mongodb_client:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    try:
+        ids = await mongodb_client.sensor_readings.distinct('machine_id')
+        return {'count': len(ids), 'machines': [{'machine_id': mid} for mid in sorted(ids)]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get('/timeline', response_model=TimelineResponse)
+async def get_timeline(
+    limit: int = 50,
+    forecast_minutes: int = 100,
+    token: dict = Depends(verify_token)
+):
+    """Mengembalikan data sensor asli terakhir + data prediksi masa depan (untuk grafik sambung)"""
+    if not mongodb_client:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    
+    try:
+        readings = await mongodb_client.get_last_readings(limit=limit)
+        if not readings:
+            raise HTTPException(status_code=404, detail="No historical data available")
+
+        safe_readings = serialize_readings(readings)
+
+        df_historical = prepare_forecast_data(readings)
+        forecast_data = generate_forecast(
+            historical_data=df_historical,
             forecast_minutes=forecast_minutes
         )
 
-        # Save forecast to database (store minutes)
-        await mongodb_client.save_forecast(
-            machine_id=machine_id,
-            forecast_minutes=forecast_minutes,
-            forecast_data=forecast_data
-        )
-
-        return ForecastResponse(
-            machine_id=machine_id,
+        return TimelineResponse(
+            last_readings=safe_readings,
             forecast_minutes=forecast_minutes,
             forecast_data=forecast_data,
             created_at=datetime.now(timezone.utc).isoformat()
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating timeline: {e}")
+
+@app.get('/machine-status')
+async def get_machine_status_dashboard(token: dict = Depends(verify_token)):
+    """Dashboard: Cek status kesehatan semua mesin berdasarkan data terakhir"""
+    classifier = get_classifier()
+    if not classifier:
+        raise HTTPException(status_code=500, detail='Machine Classifier model not loaded')
+
+    try:
+        collection = mongodb_client.sensor_readings
+        machine_ids = await collection.distinct('Machine ID')
         
-    except HTTPException:
-        raise
+        results = []
+        for mid in machine_ids:
+            if not mid: continue
+            
+            cursor = collection.find({'Machine ID': mid}).sort([('timestamp', -1)]).limit(1)
+            docs = await cursor.to_list(length=1)
+            
+            if not docs:
+                results.append({'machine_id': mid, 'status': 'no-data'})
+                continue
+
+            reading = docs[0]
+            payload = normalize_for_classifier(reading, fallback_type=str(mid)[:1])
+            
+            if not payload:
+                results.append({'machine_id': mid, 'status': 'missing-fields'})
+                continue
+
+            try:
+                pred = classifier.predict(**payload)
+                results.append({
+                    'machine_id': mid,
+                    'status': 'active',
+                    'prediction': pred['prediction_label'], 
+                    'confidence': pred['probabilities'],
+                    'last_updated': reading.get('timestamp')
+                })
+            except Exception as e:
+                results.append({'machine_id': mid, 'status': 'prediction-error', 'error': str(e)})
+
+        return {'count': len(results), 'machines': results}
+        
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error generating forecast: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error generating machine status: {e}")
 
+class GeminiRequest(BaseModel):
+    query: str
+    context: Dict 
+    label: str = "semua fitur"
 
-@app.get('/readings')
-async def get_recent_readings(machine_id: str, limit: int = 100, token: dict = Depends(verify_token)):
-    """Return the most recent sensor readings for a machine.
-
-    Query params:
-    - machine_id: machine identifier
-    - limit: maximum number of records to return (default 100)
-    """
-    if not mongodb_client:
-        raise HTTPException(
-            status_code=500,
-            detail="Database not connected. Please configure MONGODB_URI in .env"
-        )
-
+@app.post("/ask-gemini")
+async def ask_gemini_explanation(payload: GeminiRequest, token: dict = Depends(verify_token)):
     try:
-        cursor = mongodb_client.sensor_readings.find(
-            {'machine_id': machine_id},
-            sort=[('timestamp', -1)]
-        ).limit(limit)
-
-        readings = await cursor.to_list(length=limit)
-
-        # Convert non-JSON-serializable fields (ObjectId, datetime) to strings
-        safe_readings = []
-        for doc in readings:
-            safe = dict(doc)
-            if '_id' in safe:
-                try:
-                    safe['_id'] = str(safe['_id'])
-                except Exception:
-                    safe['_id'] = repr(safe.get('_id'))
-            if 'timestamp' in safe and hasattr(safe['timestamp'], 'isoformat'):
-                safe['timestamp'] = safe['timestamp'].isoformat()
-            safe_readings.append(safe)
-
+        explanation = explain_with_gemini(
+            user_query=payload.query, 
+            context_data=payload.context,
+            label_key=payload.label.lower()
+        )
+        
         return {
-            'machine_id': machine_id,
-            'count': len(safe_readings),
-            'readings': safe_readings,
+            "status": "success",
+            "original_query": payload.query,
+            "explanation": explanation
         }
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 
-
-@app.get('/machines')
-async def list_machines(token: dict = Depends(verify_token)):
-    """Return a list of distinct machine IDs in the readings collection.
-
-    This endpoint is intentionally small and returns only the machine_id
-    values so the frontend can list available machines. It's authenticated.
+@app.post("/upload-data")
+async def upload_sensor_data(
+    file: UploadFile = File(...), 
+    token: dict = Depends(verify_token)
+):
+    """
+    Upload data baru (Excel/CSV) ke database.
+    Format kolom harus sesuai dengan standar Predictive Maintenance Dataset.
     """
     if not mongodb_client:
-        raise HTTPException(
-            status_code=500,
-            detail="Database not connected. Please configure MONGODB_URI in .env"
-        )
+        raise HTTPException(status_code=500, detail="Database not connected")
 
     try:
-        # Use the MongoDB distinct command to get unique machine_id values
-        machine_ids = await mongodb_client.sensor_readings.distinct('machine_id')
-
-        # Return as a list of objects for future extensibility
-        machines = [{'machine_id': mid} for mid in sorted(machine_ids)]
-
-        return {'count': len(machines), 'machines': machines}
-
+        contents = await file.read()
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.BytesIO(contents))
+        elif file.filename.endswith(('.xls', '.xlsx')):
+            df = pd.read_excel(io.BytesIO(contents))
+        else:
+            raise HTTPException(status_code=400, detail="Format file harus .csv atau .xlsx")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading DB: {e}")
+        raise HTTPException(status_code=400, detail=f"Gagal membaca file: {str(e)}")
 
+    df.rename(columns=COLUMN_MAPPING, inplace=True)
+    
+    missing_cols = REQUIRED_COLUMNS - set(df.columns)
+    critical_missing = [col for col in missing_cols if col in [
+        "Air temperature [K]", "Process temperature [K]", 
+        "Rotational speed [rpm]", "Torque [Nm]", "Tool wear [min]"
+    ]]
+    
+    if critical_missing:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Format file salah. Kolom berikut hilang: {critical_missing}"
+        )
+
+    numeric_cols = ["Air temperature [K]", "Process temperature [K]", "Rotational speed [rpm]", "Torque [Nm]", "Tool wear [min]"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    df.dropna(subset=numeric_cols, inplace=True)
+    
+    if df.empty:
+        raise HTTPException(status_code=400, detail="File tidak berisi data valid setelah pembersihan.")
+
+    if 'timestamp' not in df.columns:
+        df['timestamp'] = datetime.now(timezone.utc)
+    else:
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+    try:
+        records = df.to_dict(orient='records')
+        count = await mongodb_client.bulk_insert_readings(records)
+        
+        success_payload = {
+            "type": "NEW_DATA",
+            "title": "Data Sensor Baru",
+            "message": f"File '{file.filename}' berhasil diupload.",
+            "timestamp": datetime.now().isoformat()
+        }
+        await notification_manager.broadcast(success_payload)
+        
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "inserted_count": count,
+            "message": f"Berhasil menambahkan {count} data baru ke sistem."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal menyimpan ke database: {str(e)}")
+
+class NotificationManager:
+    """Class untuk mengelola koneksi real-time ke client"""
+    def __init__(self):
+        self.active_connections: List[asyncio.Queue] = []
+
+    async def connect(self):
+        """User baru connect -> buatkan antrian pesan baru"""
+        queue = asyncio.Queue()
+        self.active_connections.append(queue)
+        print(f"📡 Client Connected. Total: {len(self.active_connections)}")
+        return queue
+
+    def disconnect(self, queue: asyncio.Queue):
+        """User disconnect -> hapus antrian"""
+        if queue in self.active_connections:
+            self.active_connections.remove(queue)
+            print(f"🔌 Client Disconnected. Total: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        """Kirim pesan ke SEMUA user yang sedang connect"""
+        if 'timestamp' not in message:
+            message['timestamp'] = datetime.now().isoformat()
+            
+        for queue in self.active_connections:
+            await queue.put(message)
+
+notification_manager = NotificationManager()
+
+@app.get("/notifications/stream")
+async def stream_notifications(token: dict = Depends(verify_token)):
+    """
+    Endpoint ini akan menahan koneksi (Keep-Alive).
+    Setiap kali ada trigger 'broadcast', data akan dikirim ke sini.
+    """
+    async def event_generator():
+        queue = await notification_manager.connect()
+        try:
+            while True:
+                data = await queue.get()
+                yield f"data: {json.dumps(data)}\n\n"
+        except asyncio.CancelledError:
+            notification_manager.disconnect(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

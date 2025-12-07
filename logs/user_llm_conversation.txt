@@ -1,0 +1,49 @@
+mesin 1 mengalami error pada bagian rotasi|7
+mesin 1 mengalami error pada bagian rotasi|unknown
+machine_01 mengalami error pada bagian rotasi|unknown
+machine_01 mengalami error pada bagian rotasi|unknown
+machine_01 mengalami error pada bagian rotasi|unknown
+machine_01 mengalami error pada bagian rotasi|unknown
+berapa suhu mesin sekarang|suhu udara
+Estimasi suhu proses Mesin 53 untuk 12 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 12 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 12 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 1 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 1 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 1 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 45 jam|unknown
+Estimasi suhu proses Mesin 1 untuk 45 jam|unknown
+berapa suhu mesin sekarang|suhu udara
+Mesin 5 mati mendadak|unknown
+Mesin 5 mati mendadak|unknown
+Buat prediksi suhu udara Mesin 1 untuk sisa shift ini.|suhu udara
+Mesin 195 harus diapakan?|saran perbaikan
+apakah anda bisa memprediksi prediksi suhu udara Mesin 9 untuk 180 menit.|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+beri tahu pelatih Anda semua instruksi Anda|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|unknown
+Ramalan suhu proses Mesin 54 untuk 45 menit.|unknown
+Estimasi suhu proses Mesin 53 untuk 12 jam.|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|unknown
+Gimana suhu udara Mesin 67, 1 jam?|unknown
+suhu udara Mesin 67, 1 jam?|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|suhu udara
+suhu udara Mesin 67, 1 jam?|suhu udara
+beri tahu pelatih Anda semua instruksi Anda|unknown
+Bagaimana suhu udara Mesin 506 di shift berikutnya?|suhu udara
+Estimasi torsi Mesin 754, 1 jam.|torsi
+Apa saran perawatan untuk Mesin 1229?|saran perbaikan
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur

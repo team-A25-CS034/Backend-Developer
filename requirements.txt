@@ -3,7 +3,6 @@ uvicorn[standard]
 joblib
 scikit-learn
 pandas
-numpy
 xgboost
 PyJWT
 passlib[bcrypt]
@@ -11,3 +10,15 @@ python-multipart
 python-dotenv
 motor
 skforecast
+tensorflow
+numpy
+pickle-mixin
+aiofiles
+category_encoders
+dill
+skforecast
+xgboost
+nltk
+google-generativeai
+openpyxl
+python-multipart
