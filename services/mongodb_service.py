@@ -1,8 +1,3 @@
-"""
-MongoDB Client for Machine Monitoring
-Handles sensor readings, predictions, and forecasts
-"""
-
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
@@ -55,7 +50,6 @@ class MongoDBClient:
         """
         cursor = self.sensor_readings.find({}).sort('_id', -1).limit(limit)
         docs = await cursor.to_list(length=limit)
-        # Return urutan kronologis (terlama -> terbaru) agar grafik nyambung
         return list(reversed(docs))
     
     async def save_prediction(
@@ -131,3 +125,19 @@ class MongoDBClient:
             return stats
         
         return {}
+    
+    async def bulk_insert_readings(self, readings: List[Dict]) -> int:
+        """
+        Menyimpan banyak data sensor sekaligus ke database.
+        Mengembalikan jumlah data yang berhasil disimpan.
+        """
+        if not readings:
+            return 0
+            
+        current_time = datetime.now(timezone.utc)
+        for r in readings:
+            if 'uploaded_at' not in r:
+                r['uploaded_at'] = current_time
+        
+        result = await self.sensor_readings.insert_many(readings)
+        return len(result.inserted_ids)

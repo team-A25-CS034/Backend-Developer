@@ -20,3 +20,5 @@ skforecast
 xgboost
 nltk
 google-generativeai
+openpyxl
+python-multipart

@@ -13,7 +13,6 @@ def configure_gemini():
     if not api_key: return None
     try:
         genai.configure(api_key=api_key)
-        # Menggunakan model 2.0 Flash yang cepat
         _gemini_model = genai.GenerativeModel('gemini-2.0-flash')
     except Exception as e:
         print(f"❌ Gemini Error: {e}")
@@ -32,7 +31,6 @@ def analyze_forecast_data(forecast_data_list):
         start_val = df[col].iloc[0]
         end_val = df[col].iloc[-1]
         delta = end_val - start_val
-        # Format: "215.0 -> 274.0 (+59.0)"
         trend_str = f"{round(start_val, 1)} -> {round(end_val, 1)} ({'+' if delta>0 else ''}{round(delta, 1)})"
         summary[col] = trend_str
     
@@ -46,14 +44,11 @@ def explain_with_gemini(user_query: str, context_data: dict, label_key: str = "s
         return "Layanan AI tidak tersedia."
 
     try:
-        # 1. Pre-processing Data
         machine_id = context_data.get('machine_id', 'Unknown Machine')
         forecast_list = context_data.get('forecast_data', [])
         
-        # Ringkasan data (Start -> End)
         data_summary = analyze_forecast_data(forecast_list)
         
-        # 2. Prompt Engineering (STRICT MODE)
         prompt = f"""
         Bertindaklah sebagai Senior Engineer yang sedang melaporkan status kritis mesin.
         

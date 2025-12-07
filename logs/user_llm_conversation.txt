@@ -43,3 +43,7 @@ Bagaimana suhu udara Mesin 506 di shift berikutnya?|suhu udara
 Estimasi torsi Mesin 754, 1 jam.|torsi
 Apa saran perawatan untuk Mesin 1229?|saran perbaikan
 Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
