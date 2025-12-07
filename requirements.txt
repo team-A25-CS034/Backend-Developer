@@ -3,7 +3,6 @@ uvicorn[standard]
 joblib
 scikit-learn
 pandas
-numpy
 xgboost
 PyJWT
 passlib[bcrypt]
@@ -17,3 +16,9 @@ pickle-mixin
 aiofiles
 category_encoders
 dill
+skforecast
+xgboost
+nltk
+google-generativeai
+openpyxl
+python-multipart
