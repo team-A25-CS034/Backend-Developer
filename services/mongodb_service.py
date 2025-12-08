@@ -35,8 +35,11 @@ class MongoDBClient:
         tapi sebaiknya tetap filter jika ada ID.
         """
         filter_query = {}
+        filter_query = {}
         if machine_id:
-            filter_query['Machine ID'] = machine_id
+            # FIX: Ubah 'Machine ID' menjadi 'machine_id'
+            filter_query['machine_id'] = machine_id
+        
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
         cursor = self.sensor_readings.find(filter_query)

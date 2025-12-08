@@ -56,15 +56,22 @@ REQUIRED_COLUMNS = {
 }
 
 COLUMN_MAPPING = {
-    "productID": "Product ID",
-    "air temperature [K]": "Air temperature [K]",
-    "process temperature [K]": "Process temperature [K]",
-    "rotational speed [rpm]": "Rotational speed [rpm]",
-    "torque [Nm]": "Torque [Nm]",
-    "tool wear [min]": "Tool wear [min]",
-    "machine failure": "Machine failure"
+    "productID": "machine_id",      # Ubah ke machine_id
+    "Product ID": "machine_id",     # Handle variasi
+    "Type": "machine_type",
+    "air temperature [K]": "air_temperature",
+    "Air temperature [K]": "air_temperature",
+    "process temperature [K]": "process_temperature",
+    "Process temperature [K]": "process_temperature",
+    "rotational speed [rpm]": "rotational_speed",
+    "Rotational speed [rpm]": "rotational_speed",
+    "torque [Nm]": "torque",
+    "Torque [Nm]": "torque",
+    "tool wear [min]": "tool_wear",
+    "Tool wear [min]": "tool_wear",
+    "machine failure": "machine_failure",
+    "Machine failure": "machine_failure"
 }
-
 mongodb_client: Optional[MongoDBClient] = None
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
@@ -406,13 +413,13 @@ async def get_machine_status_dashboard(token: dict = Depends(verify_token)):
 
     try:
         collection = mongodb_client.sensor_readings
-        machine_ids = await collection.distinct('Machine ID')
+        machine_ids = await collection.distinct('machine_id')
         
         results = []
         for mid in machine_ids:
             if not mid: continue
             
-            cursor = collection.find({'Machine ID': mid}).sort([('timestamp', -1)]).limit(1)
+            cursor = collection.find({'machine_id': mid}).sort([('timestamp', -1)]).limit(1)
             docs = await cursor.to_list(length=1)
             
             if not docs:
