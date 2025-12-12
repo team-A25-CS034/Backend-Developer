@@ -47,3 +47,146 @@ Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
 Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
 Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
 Semua fitur Mesin 994, 1 jam ke depan?|semua fitur
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 50 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 8 dalam 20 menit kedepan|suhu udara
+awef|unknown
+Check status for machine_01|unknown
+Check status for machine_01|unknown
+awefawef|unknown
+Check status for machine_01|unknown
+Is machine_02 safe to operate?|unknown
+awefawef|unknown
+awefawefawfe|unknown
+Check status for machine_01|unknown
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 2 dalam 20 menit kedepan|suhu udara
+Predict failures for next 5 hours|unknown
+Predict failures for next 9 hours|unknown
+Predict failures for next 1 hours|unknown
+Is machine_02 safe to operate?|unknown
+Predict failures for next 5 hours|unknown
+Analyze forecast for M003|unknown
+aefawef|unknown
+awef|unknown
+Is machine_02 safe to operate?|unknown
+Analyze forecast for M003|unknown
+awef|unknown
+q223|unknown
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine_01 dalam 20 menit kedepan|suhu udara
+5666|unknown
+Prediksi semua fitur machine_01 untuk 30 menit.|semua fitur
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+Analisis mesin M14860|error
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 10 menit kedepan|suhu udara
+Prediksi semua fitur machine_01 untuk 30 menit.|semua fitur
+Analisis selesai untuk machine_01. Berdasarkan prediksi kecepatan rotasi 60 menit ke depan|kecepatan rotasi
+Cek suhu mesin 01 untuk 30 menit kedepan|suhu udara
+Ramalan torsi machine_01, 4 jam.|torsi
+Bagaimana kecepatan rotasi machine_01 untuk 20 menit?|kecepatan rotasi
+Analisis selesai untuk machine_02. Berdasarkan prediksi forecast 60 menit ke depan:|unknown
+Bagaimana suhu proses machine_01 untuk 4 jam?|suhu proses
+Proyeksi suhu udara machine_01, 10 menit.|suhu udara
+prediksi semua fitur machine 1 dalam 20 menit kedepan|unknown
+Cek suhu mesin 01 untuk 30 menit kedepan|suhu udara
+Saya perlu data prediksi suhu udara machine_01 untuk 8 jam ke depan.|suhu udara
+Saya perlu data prediksi suhu process Mesin 3 untuk 8 jam ke depan.|suhu proses
+Saya perlu data prediksi suhu proses machine_01 untuk 8 jam ke depan.|suhu proses
+prediksi semua fitur mesin 5 untuk 10 jam ke depan|semua fitur
+Prediksi kecepatan rotasi machine_01 untuk 1 jam.|kecepatan rotasi
+Proyeksi torsi machine_01 untuk 2 jam ke depan.|torsi
+awefa awefawef|unknown
+prediksi semua fitur machine_01 untuk 10 jam ke depan|semua fitur
+prediksi semua fitur mesin 5 untuk 90 jam ke depan|semua fitur
+prediksi semua fitur mesin 5 untuk 10 menit ke depan|semua fitur
+apa saran perbaikan untuk machine_01?|saran perbaikan
+Berapa torsi machine_01 untuk 5 jam?|torsi
+awefawef|unknown
+aku kok ganteng ya bro|unknown
+Estimasi torsi machine_01, 6 jam kedepan.|torsi
+Kecepatan rotasi machine_01, 1 jam ke depan.|kecepatan rotasi
+Prediksi suhu proses machine_01 untuk 30 menit.|suhu proses
+Prediksi suhu udara machine_01 , 5 jam kedepan.|suhu udara
+prediksi semua fitur machine 1 dalam 20 menit kedepan|unknown
+prediksi semua fitur mesin 5 untuk 10 jam ke depan|semua fitur
+prediksi semua fitur mesin 5 untuk 10 jam ke depan|semua fitur
+Prediksi torsi mesin 03|torsi
+Prediksi torsi mesin 03|torsi
+Apa saran perbaikan untuk mesin M14860?|saran perbaikan
+Berapa suhu udara Machine_01 untuk 120 menit?|suhu udara
+Tampilkan prediksi suhu proses machine_01 untuk 2 jam|suhu proses
+Tolong ramalkan kecepatan rotasi machine_01 untuk 4 jam.|kecepatan rotasi
+Prediksi torsi machine_01, 4 jam dari sekarang.|torsi
+Tampilkan dashboard prediksi machine_01 selama 8 jam.|unknown
+Ramalan lengkap machine_01 untuk 5 jam.|unknown
+prediksi semua fitur mesin 01 untuk 10 jam ke depan|semua fitur
+Apa saran perbaikan untuk mesin M14860?|saran perbaikan
+prediksi semua fitur mesin 5 untuk 10 jam ke depan|semua fitur
+prediksi torsi mesin 1 untuk 10 jam ke depan|torsi
+prediksi suhu mesin 1 untuk 10 jam ke depan|suhu proses
+prediksi suhu proses mesin 1 untuk 10 jam ke depan|suhu proses
+prediksi suhu udara mesin 1 untuk 10 jam ke depan|suhu udara
+prediksi kecepatan rotasi mesin 1 untuk 10 jam ke depan|kecepatan rotasi
+aku ganteng ga|unknown
+Cek suhu mesin 01 untuk 30 menit kedepan|suhu udara
+Cek suhu mesin 01 untuk 30 menit kedepan|suhu udara
+Cek suhu udara machine_01 untuk 30 menit kedepan|unknown
+prediksi semua fitur machine_01 untuk 10 jam ke depan|semua fitur
+prediksi suhu udara machine_01 untuk 10 jam ke depan|suhu udara
+prediksi suhu proses machine_01 untuk 10 jam ke depan|suhu proses
+prediksi torsi machine_01 untuk 10 jam ke depan|semua fitur
+prediksi torsi machine_01 untuk 10 jam ke depan|semua fitur
+Torsi machine_01, 2 jam kedepan?|torsi
+prediksi semua fitur machine_01 untuk 10 jam ke depan|semua fitur
+prediksi kecepatan rotasi machine_01 untuk 10 jam ke depan|kecepatan rotasi
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu proses machine 1 dalam 20 menit kedepan|suhu proses
+prediksi torsi machine 1 dalam 20 menit kedepan|torsi
+prediksi kecepatan rotasi machine 1 dalam 20 menit kedepan|kecepatan rotasi
+prediksi semua fitu machine 1 dalam 54 menit kedepan|unknown
+prediksi semua fitu machine 1 dalam 50 menit kedepan|unknown
+prediksi semua fitu machine 1 dalam 40 menit kedepan|unknown
+prediksi semua fitur machine 1 dalam 54 menit kedepan|unknown
+Prediksi semua fitur machine 1 dalam 20 menit kedepan|unknown
+Prediksi semua fitur mesin 1 untuk 30 menit|semua fitur
+Semua fitur Mesin 1, 1 jam ke depan?|semua fitur
+Semua fitur mesin 1, 1 jam ke depan?|semua fitur
+Cek semua parameter Mesin 1 untuk 2 jam|semua fitur
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+Estimasi suhu proses Mesin M002 untuk 12 jam.|suhu proses
+Estimasi suhu proses mesin M002 untuk 12 jam|suhu proses
+Prediksi suhu proses Mesin M002 untuk 30 menit.|suhu proses
+Prediksi suhu proses Mesin L47378 untuk 30 menit.|suhu proses
+Bagaimana suhu proses Mesin 01 untuk 4 jam?|suhu proses
+Bagaimana suhu proses Mesin m003 untuk 4 jam?|suhu proses
+Bagaimana suhu proses Mesin m003 untuk 4 jam?|suhu proses
+Bagaimana suhu proses mesin 3 untuk 4 jam?|suhu proses
+Bagaimana suhu proses mesin 2 untuk 4 jam?|suhu proses
+Bagaimana suhu proses mesin 1 untuk 4 jam?|suhu proses
+Bagaimana suhu udara mesin 1 untuk 4 jam?|suhu udara
+Bagaimana torsi mesin 1 untuk 4 jam?|torsi
+Bagaimana kecepatan rotasi mesin 1 untuk 4 jam?|kecepatan rotasi
+Bagaimana semua fitur mesin 1 untuk 4 jam?|semua fitur
+awefawef|unknown
+hallo brooooo|unknown
+Saran perbaikan suhu udara mesin 1 untuk 4 jam?|suhu udara
+apa saran perbaikan untuk mesin 1|saran perbaikan
+ const fcPayload = { machine_id: machineId, forecast_minutes: forecastMinutes };|unknown
+Saran perbaikan suhu udara mesin 1 untuk 4 abad?|suhu udara
+Apakah ada kerusakan pada mesin 2?|unknown
+Prediksi semua fitur untuk mesin 1, 5 jam kedepan|semua fitur
+Prediksi semua fitur untuk mesin 1|semua fitur
+prediksi semua fitur mesin 01 untuk 30 menit kedepan|semua fitur
+Prediksi semua fitur mesin 801 untuk 4 jam ke depan!|semua fitur
+Prediksi semua fitur mesin 1 untuk 4 jam ke depan!|semua fitur
+cek suhu mesin 1 untuk 30 menit ke depan|suhu proses

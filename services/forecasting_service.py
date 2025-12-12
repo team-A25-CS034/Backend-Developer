@@ -5,6 +5,9 @@ from sklearn.linear_model import LinearRegression
 from skforecast.recursive import ForecasterRecursive
 from sklearn.svm import SVR
 from typing import Dict, List
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="skforecast")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,10 +24,16 @@ SENSOR_COLUMN_MAP = {
     'Rotational speed [rpm]': ROTATIONAL_SPEED,
     'Torque [Nm]': TORQUE,
     'Tool wear [min]': TOOL_WEAR,
+    
+    'air_temperature': AIR_TEMPERATURE,
+    'process_temperature': PROCESS_TEMPERATURE,
+    'rotational_speed': ROTATIONAL_SPEED,
+    'torque': TORQUE,
+    'tool_wear': TOOL_WEAR
 }
 
 REQUIRED_COLS = [AIR_TEMPERATURE, PROCESS_TEMPERATURE, ROTATIONAL_SPEED, TORQUE, TOOL_WEAR]
-DROPPABLE_COLS = ['UDI', 'Product ID', 'Type', 'Target', 'Failure Type', '_id']
+DROPPABLE_COLS = ['UDI', 'Product ID', 'Type', 'Target', 'Failure Type', '_id', 'machine_id', 'machine_type', 'timestamp', 'uploaded_at']
 
 def detect_outliers_iqr(df, column):
     """Helper function untuk deteksi outlier"""
@@ -43,31 +52,42 @@ def prepare_forecast_data(readings: List[Dict]) -> pd.DataFrame:
     logger.info("Loaded historical readings: rows=%s, cols=%s", len(df), list(df.columns))
     return df
 
+def _fill_missing_values(series: pd.Series, fallback_value: float = 0.0) -> pd.Series:
+    """
+    Helper kuat untuk mengisi NaN:
+    1. Interpolate (isi tengah)
+    2. Ffill (isi depan)
+    3. Bfill (isi belakang - untuk data awal yang kosong)
+    4. Fallback (isi default jika semua gagal)
+    """
+    return series.interpolate().ffill().bfill().fillna(fallback_value)
+
 def generate_forecast(
     historical_data: pd.DataFrame,
     forecast_minutes: int = 300,
-    machine_id: str = None,
-    machine_type: str = None
+    machine_id: str = None, 
+    machine_type: str = None 
 ) -> List[Dict]:
     """
     Generate forecast canggih menggunakan SVR dan Skforecast.
-    Data diambil realtime dari MongoDB (via historical_data).
     """
     steps = int(forecast_minutes)
+    if steps < 1: steps = 1
+    
     df = historical_data.copy()
 
     if df.empty:
         logger.error("Historical data is empty; cannot generate forecast")
         raise ValueError("No historical data available for forecasting")
 
-    df = df.drop(columns=[c for c in DROPPABLE_COLS if c in df.columns], errors='ignore')
     df = df.rename(columns=SENSOR_COLUMN_MAP)
-
+    df = df.drop(columns=[c for c in DROPPABLE_COLS if c in df.columns], errors='ignore')
+    
     df = df[[c for c in REQUIRED_COLS if c in df.columns]]
 
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
-        logger.error("Missing required columns: %s", missing)
+        logger.error(f"Missing required columns: {missing}")
         raise ValueError(f"Missing required columns: {missing}")
 
     for col in REQUIRED_COLS:
@@ -75,25 +95,29 @@ def generate_forecast(
 
     df = df.dropna(subset=[TOOL_WEAR])
     
-    duplicate_count = df[TOOL_WEAR].duplicated().sum()
-    if duplicate_count:
+    if df[TOOL_WEAR].duplicated().sum() > 0:
         df = df.groupby(TOOL_WEAR, as_index=False).mean()
 
     df = df.sort_values(TOOL_WEAR)
     df = df.set_index(TOOL_WEAR)
+    
+    if df.empty:
+         raise ValueError("Dataframe empty after processing tool wear")
+         
     full_index = pd.Index(range(int(df.index.max()) + 1), name=TOOL_WEAR)
     df = df.reindex(full_index)
 
     _, lower, upper = detect_outliers_iqr(df, AIR_TEMPERATURE)
     df.loc[df[AIR_TEMPERATURE] < lower, AIR_TEMPERATURE] = lower
     df.loc[df[AIR_TEMPERATURE] > upper, AIR_TEMPERATURE] = upper
-    df[AIR_TEMPERATURE] = df[AIR_TEMPERATURE].interpolate()
+    
+    df[AIR_TEMPERATURE] = _fill_missing_values(df[AIR_TEMPERATURE], fallback_value=300.0)
     
     df_reset = df.reset_index(drop=True)
     x = pd.DataFrame(list(df_reset.index), columns=["Index"])
-    
+    y_air = df_reset[AIR_TEMPERATURE]
+
     svr_air = SVR(kernel='rbf')
-    y_air = df_reset[AIR_TEMPERATURE].fillna(method='bfill').fillna(method='ffill')
     svr_air.fit(x, y_air)
     y_pred_air = svr_air.predict(x)
 
@@ -110,7 +134,7 @@ def generate_forecast(
     df.loc[df[PROCESS_TEMPERATURE] > upper, PROCESS_TEMPERATURE] = upper
     
     proc_delta = df[PROCESS_TEMPERATURE] - df[AIR_TEMPERATURE] - 10
-    proc_delta = proc_delta.interpolate().fillna(0)
+    proc_delta = _fill_missing_values(proc_delta, fallback_value=0.0)
     
     svr_proc = SVR(kernel='rbf')
     svr_proc.fit(x, proc_delta)
@@ -126,7 +150,8 @@ def generate_forecast(
     _, lower, upper = detect_outliers_iqr(df, ROTATIONAL_SPEED)
     df.loc[df[ROTATIONAL_SPEED] < lower, ROTATIONAL_SPEED] = lower
     df.loc[df[ROTATIONAL_SPEED] > upper, ROTATIONAL_SPEED] = upper
-    df[ROTATIONAL_SPEED] = df[ROTATIONAL_SPEED].interpolate().fillna(method='ffill')
+    
+    df[ROTATIONAL_SPEED] = _fill_missing_values(df[ROTATIONAL_SPEED], fallback_value=0.0)
 
     forecaster_rot = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster_rot.fit(y=df[ROTATIONAL_SPEED].reset_index(drop=True))
@@ -136,17 +161,17 @@ def generate_forecast(
     _, lower, upper = detect_outliers_iqr(df, TORQUE)
     df.loc[df[TORQUE] < lower, TORQUE] = lower
     df.loc[df[TORQUE] > upper, TORQUE] = upper
-    df[TORQUE] = df[TORQUE].interpolate().fillna(40)
+    
+    df[TORQUE] = _fill_missing_values(df[TORQUE], fallback_value=0.0)
 
     forecaster_tor = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster_tor.fit(y=df[TORQUE].reset_index(drop=True))
     pred_tor = forecaster_tor.predict(steps=steps)
-    pred_tor[pred_tor < 0] = 0 
+    pred_tor[pred_tor < 0] = 0
     output_df[TORQUE] = pred_tor.values
 
     last_wear = df.index.max()
     if pd.isna(last_wear): last_wear = 0
-    
     new_wear = range(int(last_wear) + 1, int(last_wear) + 1 + steps)
     output_df[TOOL_WEAR] = new_wear
 
