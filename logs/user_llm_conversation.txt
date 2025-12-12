@@ -148,3 +148,45 @@ prediksi torsi machine_01 untuk 10 jam ke depan|semua fitur
 Torsi machine_01, 2 jam kedepan?|torsi
 prediksi semua fitur machine_01 untuk 10 jam ke depan|semua fitur
 prediksi kecepatan rotasi machine_01 untuk 10 jam ke depan|kecepatan rotasi
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+prediksi suhu proses machine 1 dalam 20 menit kedepan|suhu proses
+prediksi torsi machine 1 dalam 20 menit kedepan|torsi
+prediksi kecepatan rotasi machine 1 dalam 20 menit kedepan|kecepatan rotasi
+prediksi semua fitu machine 1 dalam 54 menit kedepan|unknown
+prediksi semua fitu machine 1 dalam 50 menit kedepan|unknown
+prediksi semua fitu machine 1 dalam 40 menit kedepan|unknown
+prediksi semua fitur machine 1 dalam 54 menit kedepan|unknown
+Prediksi semua fitur machine 1 dalam 20 menit kedepan|unknown
+Prediksi semua fitur mesin 1 untuk 30 menit|semua fitur
+Semua fitur Mesin 1, 1 jam ke depan?|semua fitur
+Semua fitur mesin 1, 1 jam ke depan?|semua fitur
+Cek semua parameter Mesin 1 untuk 2 jam|semua fitur
+prediksi suhu udara machine 1 dalam 20 menit kedepan|suhu udara
+Estimasi suhu proses Mesin M002 untuk 12 jam.|suhu proses
+Estimasi suhu proses mesin M002 untuk 12 jam|suhu proses
+Prediksi suhu proses Mesin M002 untuk 30 menit.|suhu proses
+Prediksi suhu proses Mesin L47378 untuk 30 menit.|suhu proses
+Bagaimana suhu proses Mesin 01 untuk 4 jam?|suhu proses
+Bagaimana suhu proses Mesin m003 untuk 4 jam?|suhu proses
+Bagaimana suhu proses Mesin m003 untuk 4 jam?|suhu proses
+Bagaimana suhu proses mesin 3 untuk 4 jam?|suhu proses
+Bagaimana suhu proses mesin 2 untuk 4 jam?|suhu proses
+Bagaimana suhu proses mesin 1 untuk 4 jam?|suhu proses
+Bagaimana suhu udara mesin 1 untuk 4 jam?|suhu udara
+Bagaimana torsi mesin 1 untuk 4 jam?|torsi
+Bagaimana kecepatan rotasi mesin 1 untuk 4 jam?|kecepatan rotasi
+Bagaimana semua fitur mesin 1 untuk 4 jam?|semua fitur
+awefawef|unknown
+hallo brooooo|unknown
+Saran perbaikan suhu udara mesin 1 untuk 4 jam?|suhu udara
+apa saran perbaikan untuk mesin 1|saran perbaikan
+ const fcPayload = { machine_id: machineId, forecast_minutes: forecastMinutes };|unknown
+Saran perbaikan suhu udara mesin 1 untuk 4 abad?|suhu udara
+Apakah ada kerusakan pada mesin 2?|unknown
+Prediksi semua fitur untuk mesin 1, 5 jam kedepan|semua fitur
+Prediksi semua fitur untuk mesin 1|semua fitur
+prediksi semua fitur mesin 01 untuk 30 menit kedepan|semua fitur
+Prediksi semua fitur mesin 801 untuk 4 jam ke depan!|semua fitur
+Prediksi semua fitur mesin 1 untuk 4 jam ke depan!|semua fitur
+cek suhu mesin 1 untuk 30 menit ke depan|suhu proses

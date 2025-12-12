@@ -5,28 +5,26 @@ from sklearn.linear_model import LinearRegression
 from skforecast.recursive import ForecasterRecursive
 from sklearn.svm import SVR
 from typing import Dict, List
+import warnings
 
-# Setup Logger
+warnings.filterwarnings("ignore", category=FutureWarning, module="skforecast")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- KONSTANTA NAMA KOLOM INTERNAL (Target Standard) ---
 AIR_TEMPERATURE = "Air temperature"
 PROCESS_TEMPERATURE = "Process temperature"
 ROTATIONAL_SPEED = "Rotational speed"
 TORQUE = "Torque"
 TOOL_WEAR = "Tool wear"
 
-# --- MAPPING KOLOM (Agar support berbagai format input) ---
 SENSOR_COLUMN_MAP = {
-    # 1. Format Dataset CSV Asli (Legacy)
     'Air temperature [K]': AIR_TEMPERATURE,
     'Process temperature [K]': PROCESS_TEMPERATURE,
     'Rotational speed [rpm]': ROTATIONAL_SPEED,
     'Torque [Nm]': TORQUE,
     'Tool wear [min]': TOOL_WEAR,
     
-    # 2. Format MongoDB Baru (Snake Case)
     'air_temperature': AIR_TEMPERATURE,
     'process_temperature': PROCESS_TEMPERATURE,
     'rotational_speed': ROTATIONAL_SPEED,
@@ -74,35 +72,32 @@ def generate_forecast(
     Generate forecast canggih menggunakan SVR dan Skforecast.
     """
     steps = int(forecast_minutes)
+    if steps < 1: steps = 1
+    
     df = historical_data.copy()
 
     if df.empty:
         logger.error("Historical data is empty; cannot generate forecast")
         raise ValueError("No historical data available for forecasting")
 
-    # 1. Cleanup & Rename Columns
     df = df.rename(columns=SENSOR_COLUMN_MAP)
     df = df.drop(columns=[c for c in DROPPABLE_COLS if c in df.columns], errors='ignore')
+    
     df = df[[c for c in REQUIRED_COLS if c in df.columns]]
 
-    # Validate Columns
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing:
         logger.error(f"Missing required columns: {missing}")
         raise ValueError(f"Missing required columns: {missing}")
 
-    # Ensure Numeric
     for col in REQUIRED_COLS:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # 2. Handle Tool Wear (Pivot Point)
     df = df.dropna(subset=[TOOL_WEAR])
     
-    # Handle Duplicates in Tool Wear
     if df[TOOL_WEAR].duplicated().sum() > 0:
         df = df.groupby(TOOL_WEAR, as_index=False).mean()
 
-    # Sort & Reindex
     df = df.sort_values(TOOL_WEAR)
     df = df.set_index(TOOL_WEAR)
     
@@ -112,14 +107,10 @@ def generate_forecast(
     full_index = pd.Index(range(int(df.index.max()) + 1), name=TOOL_WEAR)
     df = df.reindex(full_index)
 
-    # 3. Forecasting Logic per Feature
-
-    # --- A. Air Temperature ---
     _, lower, upper = detect_outliers_iqr(df, AIR_TEMPERATURE)
     df.loc[df[AIR_TEMPERATURE] < lower, AIR_TEMPERATURE] = lower
     df.loc[df[AIR_TEMPERATURE] > upper, AIR_TEMPERATURE] = upper
     
-    # FIX: Robust Filling (Menghilangkan Error 'y has missing values')
     df[AIR_TEMPERATURE] = _fill_missing_values(df[AIR_TEMPERATURE], fallback_value=300.0)
     
     df_reset = df.reset_index(drop=True)
@@ -130,8 +121,7 @@ def generate_forecast(
     svr_air.fit(x, y_air)
     y_pred_air = svr_air.predict(x)
 
-    # FIX: Warning 'regressor' deprecated -> ganti 'estimator'
-    forecaster_air = ForecasterRecursive(estimator=LinearRegression(), lags=1)
+    forecaster_air = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster_air.fit(y=pd.Series(y_pred_air, name=AIR_TEMPERATURE))
     
     pred_air = forecaster_air.predict(steps=steps)
@@ -139,64 +129,52 @@ def generate_forecast(
     pred_air[pred_air > 310] = 310
     output_df = pd.DataFrame(pred_air.rename(AIR_TEMPERATURE))
 
-    # --- B. Process Temperature ---
     _, lower, upper = detect_outliers_iqr(df, PROCESS_TEMPERATURE)
     df.loc[df[PROCESS_TEMPERATURE] < lower, PROCESS_TEMPERATURE] = lower
     df.loc[df[PROCESS_TEMPERATURE] > upper, PROCESS_TEMPERATURE] = upper
     
-    # Physics Aware Delta
     proc_delta = df[PROCESS_TEMPERATURE] - df[AIR_TEMPERATURE] - 10
-    # FIX: Robust Filling
     proc_delta = _fill_missing_values(proc_delta, fallback_value=0.0)
     
     svr_proc = SVR(kernel='rbf')
     svr_proc.fit(x, proc_delta)
     y_pred_proc = svr_proc.predict(x)
 
-    # FIX: estimator argument
-    forecaster_proc = ForecasterRecursive(estimator=LinearRegression(), lags=1)
+    forecaster_proc = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster_proc.fit(y=pd.Series(y_pred_proc, name=PROCESS_TEMPERATURE))
     
     pred_proc_delta = forecaster_proc.predict(steps=steps)
     pred_proc = pred_proc_delta.values + output_df[AIR_TEMPERATURE].values + 10
     output_df[PROCESS_TEMPERATURE] = pred_proc
 
-    # --- C. Rotational Speed ---
     _, lower, upper = detect_outliers_iqr(df, ROTATIONAL_SPEED)
     df.loc[df[ROTATIONAL_SPEED] < lower, ROTATIONAL_SPEED] = lower
     df.loc[df[ROTATIONAL_SPEED] > upper, ROTATIONAL_SPEED] = upper
     
-    # FIX: Robust Filling
     df[ROTATIONAL_SPEED] = _fill_missing_values(df[ROTATIONAL_SPEED], fallback_value=0.0)
 
-    # FIX: estimator argument
-    forecaster_rot = ForecasterRecursive(estimator=LinearRegression(), lags=1)
+    forecaster_rot = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster_rot.fit(y=df[ROTATIONAL_SPEED].reset_index(drop=True))
     pred_rot = forecaster_rot.predict(steps=steps)
     output_df[ROTATIONAL_SPEED] = pred_rot.values
 
-    # --- D. Torque ---
     _, lower, upper = detect_outliers_iqr(df, TORQUE)
     df.loc[df[TORQUE] < lower, TORQUE] = lower
     df.loc[df[TORQUE] > upper, TORQUE] = upper
     
-    # FIX: Robust Filling
     df[TORQUE] = _fill_missing_values(df[TORQUE], fallback_value=0.0)
 
-    # FIX: estimator argument
-    forecaster_tor = ForecasterRecursive(estimator=LinearRegression(), lags=1)
+    forecaster_tor = ForecasterRecursive(regressor=LinearRegression(), lags=1)
     forecaster_tor.fit(y=df[TORQUE].reset_index(drop=True))
     pred_tor = forecaster_tor.predict(steps=steps)
     pred_tor[pred_tor < 0] = 0
     output_df[TORQUE] = pred_tor.values
 
-    # --- E. Tool Wear ---
     last_wear = df.index.max()
     if pd.isna(last_wear): last_wear = 0
     new_wear = range(int(last_wear) + 1, int(last_wear) + 1 + steps)
     output_df[TOOL_WEAR] = new_wear
 
-    # 4. Convert to List of Dicts
     forecast_list = []
     for i in range(steps):
         item = {
