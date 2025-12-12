@@ -52,9 +52,11 @@ jobs:
             --set-env-vars "ACCESS_TOKEN_KEY=${{ secrets.ACCESS_TOKEN_KEY }}" \
             --set-env-vars "REFRESH_TOKEN_KEY=${{ secrets.REFRESH_TOKEN_KEY }}" \
             --set-env-vars "ACCESS_TOKEN_AGE=${{ secrets.ACCESS_TOKEN_AGE }}" \
+            --set-env-vars "API_PASSWORD=${{ secrets.API_PASSWORD }}" \
+            --set-env-vars "MONGODB_URI_TICKETS=${{ secrets.MONGODB_URI_TICKETS }}" \
+            --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
             --set-env-vars "API_USERNAME=admin" \
-            --set-env-vars "API_PASSWORD=${{ secrets.API_PASSWORD }}"
-
+            
       - name: Log deployment URL
         run: |
           echo "🚀 Backend deployment complete!"
