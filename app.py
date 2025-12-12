@@ -649,8 +649,20 @@ class NotificationManager:
 
 notification_manager = NotificationManager()
 
+def verify_token_query(token: str):
+    try:
+        payload = jwt.decode(token, ACCESS_TOKEN_KEY, algorithms=[ALGORITHM])
+        if payload.get("sub") is None:
+            raise ValueError("No subject in token")
+        return payload
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token for stream",
+        )
+
 @app.get("/notifications/stream")
-async def stream_notifications(token: dict = Depends(verify_token)):
+async def stream_notifications(token: str = Depends(verify_token_query)):
     """
     Endpoint ini akan menahan koneksi (Keep-Alive).
     Setiap kali ada trigger 'broadcast', data akan dikirim ke sini.
