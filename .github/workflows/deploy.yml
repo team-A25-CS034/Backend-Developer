@@ -42,8 +42,10 @@ jobs:
             --image gcr.io/$PROJECT_ID/$SERVICE_NAME:${{ github.sha }} \
             --platform managed \
             --allow-unauthenticated \
-            --memory=2Gi \
-            --cpu=1 \
+            --memory=8Gi \
+            --cpu=4 \
+            --execution-environment=gen2 \
+            --cpu-boost \
             --set-env-vars "MONGODB_URI=${{ secrets.MONGODB_URI }}" \
             --set-env-vars "MONGODB_DATABASE=${{ secrets.MONGODB_DATABASE }}" \
             --set-env-vars "MONGODB_COLLECTION=${{ secrets.MONGODB_COLLECTION }}" \
