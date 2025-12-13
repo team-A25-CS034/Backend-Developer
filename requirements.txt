@@ -11,7 +11,7 @@ python-dotenv
 sqlalchemy[asyncio]
 asyncpg
 psycopg2-binary
-tensorflow
+tensorflow-cpu
 numpy
 pickle-mixin
 aiofiles
@@ -20,3 +20,4 @@ dill
 nltk
 google-generativeai
 openpyxl
+skforecast
