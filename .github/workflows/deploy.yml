@@ -46,16 +46,12 @@ jobs:
             --cpu=4 \
             --execution-environment=gen2 \
             --cpu-boost \
-            --set-env-vars "MONGODB_URI=${{ secrets.MONGODB_URI }}" \
-            --set-env-vars "MONGODB_DATABASE=${{ secrets.MONGODB_DATABASE }}" \
-            --set-env-vars "MONGODB_COLLECTION=${{ secrets.MONGODB_COLLECTION }}" \
+            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
             --set-env-vars "ACCESS_TOKEN_KEY=${{ secrets.ACCESS_TOKEN_KEY }}" \
-            --set-env-vars "REFRESH_TOKEN_KEY=${{ secrets.REFRESH_TOKEN_KEY }}" \
             --set-env-vars "ACCESS_TOKEN_AGE=${{ secrets.ACCESS_TOKEN_AGE }}" \
             --set-env-vars "API_PASSWORD=${{ secrets.API_PASSWORD }}" \
-            --set-env-vars "MONGODB_URI_TICKETS=${{ secrets.MONGODB_URI_TICKETS }}" \
             --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
-            --set-env-vars "API_USERNAME=admin" \
+            --set-env-vars "API_USERNAME=admin"
             
       - name: Log deployment URL
         run: |
