@@ -1,6 +1,6 @@
 import os
 import aiofiles
-from fastapi import FastAPI, HTTPException, Depends, status, Request, File, UploadFile
+from fastapi import FastAPI, HTTPException, Depends, status, Request, File, UploadFile, Query
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,15 +10,14 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from passlib.context import CryptContext
 from dotenv import load_dotenv
-from typing import Optional, List, Dict
-from services.gemini_service import explain_with_gemini
+from typing import Optional, List, Dict, Literal
 import pandas as pd
 import io
 import asyncio
 import json
-from typing import List
 
-from services.mongodb_service import MongoDBClient
+# --- SERVICES IMPORT ---
+from services.postgres_service import PostgresService
 from services.forecasting_service import generate_forecast, prepare_forecast_data
 from services.machine_failure_service import initialize_classifier, get_classifier, normalize_for_classifier
 from services.pos_service import load_pos_resources, predict_pos
@@ -31,9 +30,8 @@ load_dotenv()
 LOG_FILE_PATH = os.path.join(os.path.dirname(__file__), 'logs', 'user_llm_conversation.txt')
 os.makedirs(os.path.dirname(LOG_FILE_PATH), exist_ok=True)
 
-MONGODB_URI = os.getenv('MONGODB_URI')
-MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'machine_monitoring_db')
-MONGODB_COLLECTION = os.getenv('MONGODB_COLLECTION', 'machine_monitoring')
+# --- DATABASE CONFIG (POSTGRESQL) ---
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 # JWT Config
 ACCESS_TOKEN_KEY = os.getenv('ACCESS_TOKEN_KEY', 'secret_key')
@@ -42,6 +40,7 @@ ALGORITHM = "HS256"
 API_USERNAME = os.getenv('API_USERNAME')
 API_PASSWORD = os.getenv('API_PASSWORD')
 
+# Columns required for ML/Processing
 REQUIRED_COLUMNS = {
     "UID", 
     "Product ID", 
@@ -56,18 +55,30 @@ REQUIRED_COLUMNS = {
 }
 
 COLUMN_MAPPING = {
-    "productID": "Product ID",
-    "air temperature [K]": "Air temperature [K]",
-    "process temperature [K]": "Process temperature [K]",
-    "rotational speed [rpm]": "Rotational speed [rpm]",
-    "torque [Nm]": "Torque [Nm]",
-    "tool wear [min]": "Tool wear [min]",
-    "machine failure": "Machine failure"
+    "productID": "machine_id",
+    "Product ID": "machine_id",
+    "UDI": "udi",
+    "Type": "machine_type",
+    "air temperature [K]": "air_temperature",
+    "Air temperature [K]": "air_temperature",
+    "process temperature [K]": "process_temperature",
+    "Process temperature [K]": "process_temperature",
+    "rotational speed [rpm]": "rotational_speed",
+    "Rotational speed [rpm]": "rotational_speed",
+    "torque [Nm]": "torque",
+    "Torque [Nm]": "torque",
+    "tool wear [min]": "tool_wear",
+    "Tool wear [min]": "tool_wear",
+    "machine failure": "machine_failure",
+    "Machine failure": "machine_failure"
 }
 
-mongodb_client: Optional[MongoDBClient] = None
+# Global DB Service Instance
+db_service: Optional[PostgresService] = None
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
+security_optional = HTTPBearer(auto_error=False)
 
 class TimelineResponse(BaseModel):
     last_readings: List[Dict]
@@ -76,14 +87,12 @@ class TimelineResponse(BaseModel):
     created_at: str
 
 def serialize_readings(readings: List[Dict]) -> List[Dict]:
-    """Helper untuk bikin data MongoDB JSON-serializable"""
+    """Helper untuk format datetime agar aman untuk JSON"""
     safe_readings = []
     for doc in readings:
         safe = {}
         for key, value in doc.items():
-            if key == '_id':
-                safe['_id'] = str(value)
-            elif hasattr(value, 'isoformat'):
+            if isinstance(value, datetime):
                 safe[key] = value.isoformat()
             else:
                 safe[key] = value
@@ -92,33 +101,34 @@ def serialize_readings(readings: List[Dict]) -> List[Dict]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage MongoDB connection and ML models lifecycle"""
-    global mongodb_client
+    """Manage Database connection and ML models lifecycle"""
+    global db_service
     
     configure_gemini()
     
-    if MONGODB_URI:
-        mongodb_client = MongoDBClient(MONGODB_URI, MONGODB_DATABASE, MONGODB_COLLECTION)
-        print(f"Connected to MongoDB: {MONGODB_DATABASE}")
+    # --- INIT POSTGRESQL ---
+    if DATABASE_URL:
+        db_service = PostgresService(DATABASE_URL)
+        await db_service.init_models()
+        print(f"✅ Connected to PostgreSQL")
     else:
-        print("MONGODB_URI not set - running without database")
+        print("⚠️ DATABASE_URL not set - running without database")
     
+    # --- LOAD ML MODELS ---
     MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'classifier.h5')
     initialize_classifier(MODEL_PATH)
     
     BASE_MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
-    
     load_pos_resources(BASE_MODELS_DIR)
-    
     load_classifier_resources(os.path.join(BASE_MODELS_DIR, 'prompt_classifier'))
-    
     load_injection_resources(os.path.join(BASE_MODELS_DIR, 'prompt_injection'))
 
     yield
     
-    if mongodb_client:
-        await mongodb_client.close()
-        print("🔌 MongoDB connection closed")
+    # --- CLOSE CONNECTION ---
+    if db_service:
+        await db_service.close()
+        print("🔌 Database connection closed")
 
 
 app = FastAPI(title='Smart Machine Backend', lifespan=lifespan)
@@ -131,6 +141,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Pydantic Models
 class InputSample(BaseModel):
     Air_temperature: float
     Process_temperature: float
@@ -164,6 +175,14 @@ class TextRequest(BaseModel):
 class TextPayload(BaseModel):
     text: str
 
+class TicketCreate(BaseModel):
+    machine_name: str
+    priority: Literal["Low", "Medium", "High", "Critical"]
+    issue_summary: str
+    suggested_fix: str
+    estimated_time_to_address: str
+
+# Auth Helpers
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_AGE)
@@ -189,11 +208,14 @@ def authenticate_user(username: str, password: str) -> bool:
         return False
     return password == API_PASSWORD
 
+# --- ENDPOINTS ---
+
 @app.get('/')
 def root():
     classifier = get_classifier()
     return {
         'status': 'ok',
+        'database': 'postgresql',
         'machine_model_loaded': classifier is not None and classifier.is_loaded()
     }
 
@@ -215,7 +237,6 @@ def login(credentials: LoginRequest):
 
 @app.post('/predict/pos')
 def get_pos_tags(request: TextRequest, token: dict = Depends(verify_token)):
-    """Extract entities (POS Tags) from text."""
     try:
         result = predict_pos(request.text)
         return {
@@ -228,7 +249,6 @@ def get_pos_tags(request: TextRequest, token: dict = Depends(verify_token)):
 
 @app.post('/predict/classifier')
 async def classify_prompt(payload: TextPayload, token: dict = Depends(verify_token)):
-    """Classify user intent and log conversation."""
     try:
         result = predict_prompt_type(payload.text)
         
@@ -249,7 +269,6 @@ async def classify_prompt(payload: TextPayload, token: dict = Depends(verify_tok
 
 @app.post("/predict/injection")
 async def predict_injection(request: Request):
-    """Detect prompt injection attacks."""
     try:
         data = await request.json()
         text = data.get("prompt", "")
@@ -271,7 +290,7 @@ async def predict_injection(request: Request):
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.post('/predict')
-async def predict_machine_failure(sample: InputSample, token: dict = Depends(verify_token)): # Ubah jadi ASYNC
+async def predict_machine_failure(sample: InputSample, token: dict = Depends(verify_token)):
     classifier = get_classifier()
     if not classifier or not classifier.is_loaded():
         raise HTTPException(status_code=500, detail='Model not loaded')
@@ -287,12 +306,34 @@ async def predict_machine_failure(sample: InputSample, token: dict = Depends(ver
 
         is_failure = result['prediction_label'] != 'No Failure'
         
-        if is_failure:
+        # Simpan jika failure dan DB terkoneksi
+        if is_failure and db_service:
+            priority = "High"
+            issue_summary = f"Auto-Detected: {result['prediction_label']} pada Mesin Tipe {sample.Type}"
+            suggested_fix = "Lakukan inspeksi mendalam pada komponen rotasi."
+            
+            if sample.Tool_wear > 200:
+                suggested_fix = "Ganti komponen Tool/Mata Pisau segera (Wear Level Tinggi)."
+            
+            ticket_data = {
+                "machine_name": f"Machine_{sample.Type}_Auto",
+                "priority": priority,
+                "issue_summary": issue_summary,
+                "suggested_fix": suggested_fix,
+                "estimated_time_to_address": "1-2 Jam (Estimasi AI)",
+                "source": "System (Auto-Generated)",
+                "sensor_snapshot": sample.dict()
+            }
+            
+            # Create Ticket in Postgres
+            await db_service.create_ticket(ticket_data)
+
+            # Broadcast Alert
             alert_payload = {
                 "type": "CRITICAL_ALERT",
                 "title": f"Terdeteksi Kerusakan Mesin!",
-                "message": f"Mesin Tipe {sample.Type} terdeteksi mengalami {result['prediction_label']}",
-                "data": result, # Sertakan data teknis
+                "message": f"Tiket perbaikan otomatis telah dibuat.",
+                "data": result,
                 "timestamp": datetime.now().isoformat()
             }
             await notification_manager.broadcast(alert_payload)
@@ -304,14 +345,16 @@ async def predict_machine_failure(sample: InputSample, token: dict = Depends(ver
 
 @app.post('/forecast', response_model=ForecastResponse)
 async def forecast_machine(request: ForecastRequest, token: dict = Depends(verify_token)):
-    if not mongodb_client:
+    if not db_service:
         raise HTTPException(status_code=500, detail="Database not connected")
     
     try:
-        historical_readings = await mongodb_client.get_readings_range(request.machine_id, days=30)
+        # Ambil data dari Postgres (30 hari terakhir)
+        historical_readings = await db_service.get_readings_range(request.machine_id, days=30)
         
         if not historical_readings:
-             historical_readings = await mongodb_client.get_last_readings(limit=1440)
+             # Fallback: ambil data terakhir tanpa filter hari
+             historical_readings = await db_service.get_last_readings(limit=1440)
         
         if not historical_readings or len(historical_readings) < 7:
             raise HTTPException(status_code=400, detail="Insufficient data for forecasting (need min 7 points)")
@@ -319,7 +362,7 @@ async def forecast_machine(request: ForecastRequest, token: dict = Depends(verif
         df_historical = prepare_forecast_data(historical_readings)
         
         last_reading = historical_readings[-1]
-        machine_type = last_reading.get('Type', 'M') 
+        machine_type = last_reading.get('machine_type') or last_reading.get('Type') or 'M'
         
         forecast_data = generate_forecast(
             historical_data=df_historical,
@@ -328,7 +371,7 @@ async def forecast_machine(request: ForecastRequest, token: dict = Depends(verif
             machine_type=machine_type
         )
         
-        await mongodb_client.save_forecast(request.machine_id, request.forecast_minutes, forecast_data)
+        await db_service.save_forecast(request.machine_id, request.forecast_minutes, forecast_data)
         
         return ForecastResponse(
             machine_id=request.machine_id,
@@ -342,26 +385,35 @@ async def forecast_machine(request: ForecastRequest, token: dict = Depends(verif
 
 @app.get('/readings')
 async def get_readings(machine_id: str, limit: int = 100, token: dict = Depends(verify_token)):
-    if not mongodb_client:
+    if not db_service:
         raise HTTPException(status_code=500, detail="Database not connected")
     try:
-        cursor = mongodb_client.sensor_readings.find({'machine_id': machine_id}, sort=[('timestamp', -1)]).limit(limit)
-        readings = await cursor.to_list(length=limit)
-        for doc in readings:
-            doc['_id'] = str(doc.get('_id'))
-            if 'timestamp' in doc: doc['timestamp'] = doc['timestamp'].isoformat()
+        # Ambil list reading, karena get_readings_range ambil list, kita filter manual limitnya
+        readings = await db_service.get_readings_range(machine_id, days=365) 
         
-        return {'machine_id': machine_id, 'count': len(readings), 'readings': readings}
+        # Sort descending by timestamp (asumsi service return chronological, kita balik)
+        readings.sort(key=lambda x: x['timestamp'], reverse=True)
+        limited_readings = readings[:limit]
+        
+        # Serialize datetime
+        safe_readings = serialize_readings(limited_readings)
+        
+        return {'machine_id': machine_id, 'count': len(safe_readings), 'readings': safe_readings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get('/machines')
 async def get_machines_list(token: dict = Depends(verify_token)):
-    if not mongodb_client:
+    if not db_service:
         raise HTTPException(status_code=500, detail="Database not connected")
     try:
-        ids = await mongodb_client.sensor_readings.distinct('machine_id')
-        return {'count': len(ids), 'machines': [{'machine_id': mid} for mid in sorted(ids)]}
+        # SQL Distinct Query
+        ids = await db_service.get_distinct_machine_ids()
+        
+        # Clean nulls
+        clean_ids = [mid for mid in ids if mid]
+        
+        return {'count': len(clean_ids), 'machines': [{'machine_id': mid} for mid in sorted(clean_ids)]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -371,12 +423,11 @@ async def get_timeline(
     forecast_minutes: int = 100,
     token: dict = Depends(verify_token)
 ):
-    """Mengembalikan data sensor asli terakhir + data prediksi masa depan (untuk grafik sambung)"""
-    if not mongodb_client:
+    if not db_service:
         raise HTTPException(status_code=500, detail="Database not connected")
     
     try:
-        readings = await mongodb_client.get_last_readings(limit=limit)
+        readings = await db_service.get_last_readings(limit=limit)
         if not readings:
             raise HTTPException(status_code=404, detail="No historical data available")
 
@@ -399,30 +450,38 @@ async def get_timeline(
 
 @app.get('/machine-status')
 async def get_machine_status_dashboard(token: dict = Depends(verify_token)):
-    """Dashboard: Cek status kesehatan semua mesin berdasarkan data terakhir"""
     classifier = get_classifier()
     if not classifier:
         raise HTTPException(status_code=500, detail='Machine Classifier model not loaded')
 
+    if not db_service:
+        raise HTTPException(status_code=500, detail="Database not connected")
+
     try:
-        collection = mongodb_client.sensor_readings
-        machine_ids = await collection.distinct('Machine ID')
+        machine_ids = await db_service.get_distinct_machine_ids()
         
         results = []
         for mid in machine_ids:
             if not mid: continue
             
-            cursor = collection.find({'Machine ID': mid}).sort([('timestamp', -1)]).limit(1)
-            docs = await cursor.to_list(length=1)
+            # Ambil 1 data terakhir
+            reading = await db_service.get_latest_reading(mid)
             
-            if not docs:
+            if not reading:
                 results.append({'machine_id': mid, 'status': 'no-data'})
                 continue
 
-            reading = docs[0]
-            payload = normalize_for_classifier(reading, fallback_type=str(mid)[:1])
+            # Mapping Key SQL (snake_case) ke Feature Model
+            payload = {
+                'air_temperature': reading.get('air_temperature'),
+                'process_temperature': reading.get('process_temperature'),
+                'rotational_speed': reading.get('rotational_speed'),
+                'torque': reading.get('torque'),
+                'tool_wear': reading.get('tool_wear'),
+                'machine_type': reading.get('machine_type')
+            }
             
-            if not payload:
+            if None in payload.values():
                 results.append({'machine_id': mid, 'status': 'missing-fields'})
                 continue
 
@@ -472,10 +531,11 @@ async def upload_sensor_data(
     token: dict = Depends(verify_token)
 ):
     """
-    Upload data baru (Excel/CSV) ke database.
-    Format kolom harus sesuai dengan standar Predictive Maintenance Dataset.
+    Upload data baru (Excel/CSV) ke PostgreSQL.
+    Otomatis mapping kolom CSV ke kolom Database (snake_case).
+    Fix: Timestamp timezone issue.
     """
-    if not mongodb_client:
+    if not db_service:
         raise HTTPException(status_code=500, detail="Database not connected")
 
     try:
@@ -489,43 +549,49 @@ async def upload_sensor_data(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Gagal membaca file: {str(e)}")
 
+    # 1. Rename Kolom (CSV Header -> Snake Case DB Column)
     df.rename(columns=COLUMN_MAPPING, inplace=True)
+
+    # 2. Pastikan kolom yang dibutuhkan ada
+    required_internal_cols = ["air_temperature", "process_temperature", "rotational_speed", "torque", "tool_wear"]
     
-    missing_cols = REQUIRED_COLUMNS - set(df.columns)
-    critical_missing = [col for col in missing_cols if col in [
-        "Air temperature [K]", "Process temperature [K]", 
-        "Rotational speed [rpm]", "Torque [Nm]", "Tool wear [min]"
-    ]]
-    
-    if critical_missing:
+    missing_cols = set(required_internal_cols) - set(df.columns)
+    if missing_cols:
         raise HTTPException(
             status_code=400, 
-            detail=f"Format file salah. Kolom berikut hilang: {critical_missing}"
+            detail=f"Mapping Gagal. Kolom database berikut tidak ditemukan: {missing_cols}. Cek header CSV anda."
         )
 
-    numeric_cols = ["Air temperature [K]", "Process temperature [K]", "Rotational speed [rpm]", "Torque [Nm]", "Tool wear [min]"]
-    for col in numeric_cols:
+    # 3. Cleaning Numeric Data
+    for col in required_internal_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    df.dropna(subset=numeric_cols, inplace=True)
+    df.dropna(subset=required_internal_cols, inplace=True)
     
     if df.empty:
         raise HTTPException(status_code=400, detail="File tidak berisi data valid setelah pembersihan.")
 
+    # --- PERBAIKAN TIMESTAMPS (CRUCIAL FIX) ---
     if 'timestamp' not in df.columns:
-        df['timestamp'] = datetime.now(timezone.utc)
+        # Gunakan datetime.now() polos (Naive) agar cocok dengan PostgreSQL
+        df['timestamp'] = datetime.now() 
     else:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
+        # Jika pandas mendeteksi timezone, kita hapus (tz_localize(None))
+        try:
+            df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+        except Exception:
+            pass # Sudah naive, biarkan
 
     try:
         records = df.to_dict(orient='records')
-        count = await mongodb_client.bulk_insert_readings(records)
+        count = await db_service.bulk_insert_readings(records)
         
         success_payload = {
             "type": "NEW_DATA",
             "title": "Data Sensor Baru",
-            "message": f"File '{file.filename}' berhasil diupload.",
+            "message": f"File '{file.filename}' berhasil diupload ke PostgreSQL.",
             "timestamp": datetime.now().isoformat()
         }
         await notification_manager.broadcast(success_payload)
@@ -537,42 +603,69 @@ async def upload_sensor_data(
             "message": f"Berhasil menambahkan {count} data baru ke sistem."
         }
     except Exception as e:
+        # Print error detail ke console agar lebih jelas
+        print(f"❌ Upload Error Detail: {e}") 
         raise HTTPException(status_code=500, detail=f"Gagal menyimpan ke database: {str(e)}")
 
 class NotificationManager:
-    """Class untuk mengelola koneksi real-time ke client"""
     def __init__(self):
         self.active_connections: List[asyncio.Queue] = []
 
     async def connect(self):
-        """User baru connect -> buatkan antrian pesan baru"""
         queue = asyncio.Queue()
         self.active_connections.append(queue)
         print(f"📡 Client Connected. Total: {len(self.active_connections)}")
         return queue
 
     def disconnect(self, queue: asyncio.Queue):
-        """User disconnect -> hapus antrian"""
         if queue in self.active_connections:
             self.active_connections.remove(queue)
             print(f"🔌 Client Disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
-        """Kirim pesan ke SEMUA user yang sedang connect"""
         if 'timestamp' not in message:
             message['timestamp'] = datetime.now().isoformat()
-            
         for queue in self.active_connections:
             await queue.put(message)
 
 notification_manager = NotificationManager()
 
+def verify_token_stream(
+    token: Optional[str] = Query(None), 
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(security_optional)
+):
+    """
+    Helper Hybrid: Bisa baca token dari URL (?token=...) ATAU Header (Authorization: Bearer ...)
+    """
+    token_string = None
+    
+    # 1. Cek apakah ada di URL Query (?token=abc)
+    if token:
+        token_string = token
+    # 2. Jika tidak ada di URL, cek di Header Authorization
+    elif auth:
+        token_string = auth.credentials
+    
+    # 3. Validasi
+    if not token_string:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is required (Query Param 'token' or Bearer Header)",
+        )
+
+    try:
+        payload = jwt.decode(token_string, ACCESS_TOKEN_KEY, algorithms=[ALGORITHM])
+        if payload.get("sub") is None:
+            raise ValueError("No subject in token")
+        return payload
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
 @app.get("/notifications/stream")
-async def stream_notifications(token: dict = Depends(verify_token)):
-    """
-    Endpoint ini akan menahan koneksi (Keep-Alive).
-    Setiap kali ada trigger 'broadcast', data akan dikirim ke sini.
-    """
+async def stream_notifications(token_payload: dict = Depends(verify_token_stream)):
     async def event_generator():
         queue = await notification_manager.connect()
         try:
@@ -583,3 +676,39 @@ async def stream_notifications(token: dict = Depends(verify_token)):
             notification_manager.disconnect(queue)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/tickets", status_code=201)
+async def create_manual_ticket(ticket: TicketCreate, token: dict = Depends(verify_token)):
+    if not db_service:
+        raise HTTPException(status_code=500, detail="Database not connected")
+    
+    try:
+        ticket_data = ticket.dict()
+        ticket_data['source'] = "Manual (Engineer)"
+        ticket_data['created_by'] = token.get('sub', 'Unknown User') 
+        
+        # Postgres Service call
+        ticket_id = await db_service.create_ticket(ticket_data)
+        
+        return {
+            "status": "success",
+            "message": "Tiket berhasil dibuat",
+            "ticket_id": ticket_id,
+            "data": ticket_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal membuat tiket: {e}")
+
+@app.get("/tickets-machine")
+async def get_all_tickets(status: str = None, token: dict = Depends(verify_token)):
+    if not db_service:
+        raise HTTPException(status_code=500, detail="Database not connected")
+        
+    try:
+        tickets = await db_service.get_tickets(limit=100, status=status)
+        return {
+            "count": len(tickets),
+            "tickets": tickets
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
