@@ -47,7 +47,8 @@ jobs:
             --execution-environment=gen2 \
             --cpu-boost \
             --port 8080 \
-            --timeout=300s \
+            --timeout=600s \
+            --no-cpu-throttling \
             --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
             --set-env-vars "ACCESS_TOKEN_KEY=${{ secrets.ACCESS_TOKEN_KEY }}" \
             --set-env-vars "ACCESS_TOKEN_AGE=${{ secrets.ACCESS_TOKEN_AGE }}" \
